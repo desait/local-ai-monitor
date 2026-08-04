@@ -83,7 +83,8 @@ class TestBrowserAdvice(unittest.TestCase):
         ]
         with mock.patch.object(ba, "_ps_app_process_rows", return_value=rows), \
              mock.patch.object(ba, "_frontmost_app_name", return_value=None), \
-             mock.patch.object(ba, "_counts_for", return_value=None):
+             mock.patch.object(ba, "_counts_for", return_value=None), \
+             mock.patch.object(ba, "top_quitable_apps", return_value=[]):
             out = ba.browser_advice(min_rss_kb=20 * 1024)
 
         self.assertEqual(out["candidates"], [])
