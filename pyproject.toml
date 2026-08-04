@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-ai-monitor"
+version = "2.1.0"
+description = "Local macOS menu bar and CLI monitor for AI tool CPU and memory headroom."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Local AI Monitor contributors" }]
+keywords = ["macos", "ai", "monitor", "menu-bar", "resource-policy"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: MacOS X",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+
+[project.scripts]
+local-ai-monitor = "local_ai_monitor.cli:main"
+local-ai-rm = "local_ai_monitor.resource.cli:cmd_resource"
+
+[tool.setuptools.packages.find]
+include = ["local_ai_monitor*"]

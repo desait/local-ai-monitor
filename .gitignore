@@ -1,0 +1,41 @@
+# Local Apple signing (may contain DEVELOPMENT_TEAM)
+RemoteApp/local.xcconfig
+RemoteApp/build/
+RemoteApp/**/DerivedData*/
+RemoteApp/dist/
+
+# Build / caches
+.run/
+**/__pycache__/
+**/*.pyc
+**/.DS_Store
+menubar/.build/
+menubar/DerivedData/
+native/dist/
+*.o
+*.xcuserstate
+.DerivedData/
+
+# Local agent / IDE
+.grok/rules/00-SESSION_STATE-LIVE.md
+.grok/sessions/
+*.swp
+.env
+.env.*
+
+# Personal / ops dumps (never ship)
+_meta/SESSION_STATE.md
+_meta/evidence/
+_meta/**/SESSION_STATE*
+**/headroom-samples.jsonl
+**/clang-learn*
+
+# Backups
+*.bak
+ai-top-v1.bak
+
+# Python packaging
+*.egg-info/
+.venv/
+dist/
+build/
