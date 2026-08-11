@@ -47,7 +47,6 @@
 #define MAX_SESS 128
 #define MAX_PIDS_PER_SESS 64
 #define JSON_CAP (96 * 1024)
-#define HEAVY_RSS_KB (1024 * 1024) /* 1 GB —  */
 #define ACTIVE_CPU 2.5
 #define IDLE_CPU 0.8
 /* Legacy free-page knobs kept only for env override / audit fields — NOT band. */
@@ -65,6 +64,9 @@
 #define MIN_THRASH_RATE_DT_S 15.0
 /* GB-scale reclaim floor: ignore sub-0.5 GiB sessions (product law 2026-07-30). */
 #define MIN_RECLAIM_RSS_KB (512 * 1024)
+#define HEAVY_RSS_FLOOR_KB (1024 * 1024)
+#define HEAVY_RSS_CEILING_KB (4096 * 1024)
+#define HEAVY_RSS_MEM_FRACTION 0.08
 #define SOFT_STOP_GRACE_S 2
 #define ACT_COOLDOWN_S 60
 #define NOTIFY_COOLDOWN_S 120
@@ -149,6 +151,10 @@ static VmCounters g_prev_vm;
 static double g_prev_vm_ms;
 static int g_prev_vm_ready;
 static double g_profile_first_ms;
+static double g_learn_ai_rss_mb;
+static double g_learn_ai_mem_pct;
+static double g_learn_cpu_capacity_pct;
+static double g_learn_thrash_score;
 
 static int pool_init(void) {
     if (g_pool_ready)
@@ -838,6 +844,55 @@ static int write_atomic(const char *path, const char *body) {
     return 0;
 }
 
+static void append_host_sample(const char *state_dir, const char *host_id, double headroom_mb,
+                               double thrash_score, int ai_mb, double ai_mem_pct,
+                               double cpu_capacity_pct) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s/host-profile-samples.jsonl", state_dir);
+    ensure_parent_dir(path);
+    FILE *f = fopen(path, "a");
+    if (!f)
+        return;
+    char ts[64];
+    iso_local(ts, sizeof(ts));
+    fprintf(f,
+            "{\"ts\":\"%s\",\"host_id\":\"%s\",\"headroom_mb\":%.1f,"
+            "\"thrash_score\":%.2f,\"ai_rss_mb\":%d,\"ai_mem_pct\":%.1f,"
+            "\"cpu_capacity_pct\":%.1f}\n",
+            ts, host_id, headroom_mb, thrash_score, ai_mb, ai_mem_pct, cpu_capacity_pct);
+    fclose(f);
+}
+
+static void update_learned_capacity(int ai_mb, double ai_mem_pct, double cpu_capacity_pct,
+                                    double thrash_score) {
+    const double alpha = 0.08;
+    if (g_learn_ai_rss_mb <= 0.0) {
+        g_learn_ai_rss_mb = (double)ai_mb;
+        g_learn_ai_mem_pct = ai_mem_pct;
+        g_learn_cpu_capacity_pct = cpu_capacity_pct;
+        g_learn_thrash_score = thrash_score;
+        return;
+    }
+    g_learn_ai_rss_mb = g_learn_ai_rss_mb * (1.0 - alpha) + (double)ai_mb * alpha;
+    g_learn_ai_mem_pct = g_learn_ai_mem_pct * (1.0 - alpha) + ai_mem_pct * alpha;
+    g_learn_cpu_capacity_pct =
+        g_learn_cpu_capacity_pct * (1.0 - alpha) + cpu_capacity_pct * alpha;
+    g_learn_thrash_score = g_learn_thrash_score * (1.0 - alpha) + thrash_score * alpha;
+}
+
+static long host_heavy_rss_kb(unsigned long long memsize) {
+    long threshold = HEAVY_RSS_FLOOR_KB;
+    if (memsize > 0) {
+        double mem_mb = (double)memsize / (1024.0 * 1024.0);
+        long scaled = (long)(mem_mb * 1024.0 * HEAVY_RSS_MEM_FRACTION);
+        if (scaled > threshold)
+            threshold = scaled;
+    }
+    if (threshold > HEAVY_RSS_CEILING_KB)
+        threshold = HEAVY_RSS_CEILING_KB;
+    return threshold;
+}
+
 static int existing_ready_profile_matches(const char *path, unsigned long long memsize,
                                           int page_size) {
     FILE *f = fopen(path, "r");
@@ -1357,6 +1412,9 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
     double profile_confidence = clamp_double((profile_age_s / 60.0) * 0.5, 0.0, 0.5);
     if (strcmp(profile_status, "ready") == 0)
         profile_confidence = 1.0;
+    char host_id[96];
+    snprintf(host_id, sizeof(host_id), "native-v1:%llu:%d", memsize, page_size);
+    long dynamic_heavy_rss_kb = host_heavy_rss_kb(memsize);
     if (sysctl_int("vm.page_speculative_count", &speculative_pages) != 0)
         speculative_pages = 0;
     if (sysctl_int("vm.page_purgeable_count", &purgeable_pages) != 0)
@@ -1495,7 +1553,7 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
                  "{\n"
                  "  \"version\": 1,\n"
                  "  \"source\": \"local-ai-monitord\",\n"
-                 "  \"host_id\": \"native-v1:%llu:%d\",\n"
+                 "  \"host_id\": \"%s\",\n"
                  "  \"memsize_bytes\": %llu,\n"
                  "  \"page_size\": %d,\n"
                  "  \"status\": \"%s\",\n"
@@ -1505,7 +1563,7 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
                  "  \"headroom_warn_mb\": %.0f,\n"
                  "  \"threshold_source\": \"host-bounded:v1\"\n"
                  "}\n",
-                 memsize, page_size, memsize, page_size, profile_status,
+                 host_id, memsize, page_size, profile_status,
                  profile_confidence, profile_age_s, g_headroom_ok_mb, g_headroom_warn_mb);
         ensure_parent_dir(host_profile_path);
         if (write_atomic(host_profile_path, body) != 0)
@@ -1582,6 +1640,37 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
             cpu_capacity_pct = 0.0;
         if (cpu_capacity_pct > 100.0)
             cpu_capacity_pct = 100.0;
+        update_learned_capacity(ai_mb, ai_mem_pct, cpu_capacity_pct, thrash_score);
+        append_host_sample(state_dir, host_id, headroom_mb, thrash_score, ai_mb, ai_mem_pct,
+                           cpu_capacity_pct);
+        {
+            char body[1280];
+            snprintf(body, sizeof(body),
+                     "{\n"
+                     "  \"version\": 1,\n"
+                     "  \"source\": \"local-ai-monitord\",\n"
+                     "  \"host_id\": \"%s\",\n"
+                     "  \"memsize_bytes\": %llu,\n"
+                     "  \"page_size\": %d,\n"
+                     "  \"status\": \"%s\",\n"
+                     "  \"confidence\": %.3f,\n"
+                     "  \"profile_age_s\": %.1f,\n"
+                     "  \"headroom_ok_mb\": %.0f,\n"
+                     "  \"headroom_warn_mb\": %.0f,\n"
+                     "  \"threshold_source\": \"host-bounded:v1\",\n"
+                     "  \"learned\": {\n"
+                     "    \"ai_rss_ewma_mb\": %.1f,\n"
+                     "    \"ai_mem_ewma_pct\": %.1f,\n"
+                     "    \"cpu_capacity_ewma_pct\": %.1f,\n"
+                     "    \"thrash_ewma\": %.2f\n"
+                     "  }\n"
+                     "}\n",
+                     host_id, memsize, page_size, profile_status, profile_confidence,
+                     profile_age_s, g_headroom_ok_mb, g_headroom_warn_mb, g_learn_ai_rss_mb,
+                     g_learn_ai_mem_pct, g_learn_cpu_capacity_pct, g_learn_thrash_score);
+            if (write_atomic(host_profile_path, body) != 0)
+                fprintf(stderr, "local-ai-monitord: learned host profile write failed\n");
+        }
         int low_room = headroom_mb >= 0.0 && headroom_mb < g_headroom_warn_mb;
         int loaded_host = ai_mem_pct >= 25.0 || cpu_capacity_pct >= 70.0;
         if (!physics_ok) {
@@ -1714,6 +1803,11 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
                 "    \"ai_mem_pct\": %.1f,\n"
                 "    \"cpu_count\": %d,\n"
                 "    \"cpu_capacity_pct\": %.1f,\n"
+                "    \"heavy_rss_kb\": %ld,\n"
+                "    \"learned_ai_rss_mb\": %.1f,\n"
+                "    \"learned_ai_mem_pct\": %.1f,\n"
+                "    \"learned_cpu_capacity_pct\": %.1f,\n"
+                "    \"learned_thrash_score\": %.2f,\n"
                 "    \"profile_status\": \"%s\",\n"
                 "    \"profile_age_s\": %.1f,\n"
                 "    \"profile_confidence\": %.3f,\n"
@@ -1733,6 +1827,8 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
                 "  },\n",
                 (int)(g_headroom_ok_mb + 0.5), (int)(g_headroom_warn_mb + 0.5),
                 mem_mb_i, ai_mem_pct, cpu_count, cpu_capacity_pct,
+                dynamic_heavy_rss_kb, g_learn_ai_rss_mb, g_learn_ai_mem_pct,
+                g_learn_cpu_capacity_pct, g_learn_thrash_score,
                 profile_status, profile_age_s, profile_confidence,
                 ai_mb, thrash_score, pressure_state, recommendation,
                 can_start_heavy ? "true" : "false",
@@ -1755,7 +1851,7 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
         jesc(edet, sizeof(edet), s->detail);
         jesc(ekind, sizeof(ekind), s->kind);
         const char *act = activity_for(s->pcpu);
-        int heavy = s->rss_kb >= HEAVY_RSS_KB;
+        int heavy = s->rss_kb >= dynamic_heavy_rss_kb;
         int auto_reclaim = 0;
         if (str_eq(act, "idle") && s->rss_kb >= MIN_RECLAIM_RSS_KB)
             auto_reclaim = 1;

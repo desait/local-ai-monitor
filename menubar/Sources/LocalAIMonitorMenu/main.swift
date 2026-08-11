@@ -125,6 +125,11 @@ struct LiveSnap: Decodable {
         let ai_mem_pct: Double?
         let cpu_count: Int?
         let cpu_capacity_pct: Double?
+        let heavy_rss_kb: Int?
+        let learned_ai_rss_mb: Double?
+        let learned_ai_mem_pct: Double?
+        let learned_cpu_capacity_pct: Double?
+        let learned_thrash_score: Double?
         let profile_status: String?
         let profile_age_s: Double?
         let profile_confidence: Double?
@@ -233,12 +238,12 @@ enum LoadBand: String {
     case quiet    // light / open but running
     case idle     // installed · quiet
 
-    /// 1 GB in KB — <1 GB is normal on 8 GB Macs, not "heavy".
-    static let heavyRssKb = 1024 * 1024
+    /// Floor only. Runtime labels use the host-derived resource.heavy_rss_kb.
+    static let heavyRssFloorKb = 1024 * 1024
 
-    static func from(cpu: Double, rssKb: Int, sessionCount: Int) -> LoadBand {
+    static func from(cpu: Double, rssKb: Int, sessionCount: Int, heavyRssKb: Int = heavyRssFloorKb) -> LoadBand {
         if sessionCount <= 0 && cpu <= 0 && rssKb <= 0 { return .idle }
-        // Hot = very high CPU or ≥1 GB RSS (not 400 MB)
+        // Hot = very high CPU or host-scale heavy RAM.
         if cpu >= 50 || rssKb >= heavyRssKb { return .hot }
         if cpu >= 5 || rssKb >= (512 * 1024) { return .busy }  // ≥512 MB = busy tint
         return .quiet
@@ -519,9 +524,9 @@ struct SessionRow: Identifiable {
     let kind: String
     /// What it is doing (RAM justification).
     let activity: String
-    var isHeavy: Bool { rssKb >= LoadBand.heavyRssKb }
+    var isHeavy: Bool { rssKb >= LoadBand.heavyRssFloorKb }
     var isMultiPid: Bool { nproc > 1 }
-    /// Confirm before end when multi-process or ≥1 GB.
+    /// Conservative fallback for non-model call sites.
     var needsEndConfirm: Bool { isHeavy || isMultiPid }
     var isService: Bool { kind == "service" }
     var checkpointAction: String? { Human.checkpointAction(app: app) }
@@ -1558,7 +1563,7 @@ final class LiveModel: ObservableObject {
     @Published var newSessionToolId: String = ""
     /// Top live sessions by RSS (home “Heaviest sessions”).
     @Published var heaviestSessions: [SessionRow] = []
-    /// One-line preview for End heavy (matches end_heaviest argmax).
+    /// One-line preview for the largest-load action (matches end_heaviest argmax).
     @Published var endHeavyPreview: String = ""
     /// Free-RAM interrupt (local-ai-rm) — only when band warn/hard.
     @Published var resourceShow: Bool = false
@@ -1592,6 +1597,11 @@ final class LiveModel: ObservableObject {
     @Published var resourceSwapTotalMb: Int?
     @Published var resourceThrashScore: Double?
     @Published var resourceAiMb: Int?
+    @Published var resourceHeavyRssKb: Int?
+    @Published var resourceLearnedAiRssMb: Double?
+    @Published var resourceLearnedAiMemPct: Double?
+    @Published var resourceLearnedCpuCapacityPct: Double?
+    @Published var resourceLearnedThrashScore: Double?
     @Published var parkingMessage: String = "Loading Parking Lot…"
     @Published var parkingDetail: String = ""
     @Published var parkingParkable: [ParkingItem] = []
@@ -1675,12 +1685,49 @@ final class LiveModel: ObservableObject {
         }
     }
 
+    var dynamicHeavyRssKb: Int {
+        let memMb = resourceMemsizeMb ?? Int(MonitorCopy.physicalMemoryMb)
+        let floorKb = LoadBand.heavyRssFloorKb
+        let ceilingKb = 4096 * 1024
+        let scaledKb = Int(Double(max(memMb, 0)) * 1024.0 * 0.08)
+        var threshold = min(ceilingKb, max(floorKb, scaledKb))
+        if let kb = resourceHeavyRssKb, kb > 0 {
+            threshold = min(ceilingKb, max(threshold, kb))
+        }
+        if let learnedMb = resourceLearnedAiRssMb, learnedMb > 0 {
+            let learnedKb = Int(learnedMb * 1024.0 * 1.35)
+            threshold = min(ceilingKb, max(threshold, learnedKb))
+        }
+        return threshold
+    }
+
+    func isDynamicallyHeavy(_ row: SessionRow) -> Bool {
+        if resourcePressureState == "stop_start_gate" || resourcePressureState == "freeze_risk" || !resourceCanStartHeavy {
+            return row.rssKb >= 512 * 1024 || row.cpu >= 50.0
+        }
+        return row.rssKb >= dynamicHeavyRssKb || row.cpu >= 80.0
+    }
+
+    func needsEndConfirm(_ row: SessionRow) -> Bool {
+        row.isMultiPid || isDynamicallyHeavy(row)
+    }
+
+    var endLoadTitle: String {
+        guard let top = heaviestSessions.first else { return "End largest" }
+        return isDynamicallyHeavy(top) ? "End heavy" : "End largest"
+    }
+
+    func loadBadgeTitle(for row: SessionRow, index: Int) -> String? {
+        guard index == 0 else { return nil }
+        return isDynamicallyHeavy(row) ? "End heavy" : "Largest"
+    }
+
     func sessionsForSelectedTool() -> [SessionRow] {
         guard case .tool(let id) = nav else { return [] }
         return allSessions
             .filter { $0.app == id }
             .sorted { a, b in
-                // Heaviest first, then CPU — matches End heavy mental model
+                // Heaviest first, then CPU; matches the largest-load action.
                 if a.rssKb != b.rssKb { return a.rssKb > b.rssKb }
                 return a.cpu > b.cpu
             }
@@ -1834,7 +1881,7 @@ final class LiveModel: ObservableObject {
             focusNote = "No session id — cannot end."
             return
         }
-        if row.needsEndConfirm {
+        if needsEndConfirm(row) {
             let procNote = row.isMultiPid ? "\(row.nproc) processes" : "1 process"
             let ok = EndConfirm.ask(
                 title: "End “\(row.title)”?",
@@ -1851,7 +1898,7 @@ final class LiveModel: ObservableObject {
         let rows = allSessions.filter { $0.app == id }
         let totalRss = rows.map(\.rssKb).reduce(0, +)
         let totalProc = rows.map(\.nproc).reduce(0, +)
-        let heavy = totalRss >= LoadBand.heavyRssKb || totalProc > 1 || rows.count > 1
+        let heavy = totalRss >= dynamicHeavyRssKb || totalProc > 1 || rows.count > 1
         if heavy {
             let ok = EndConfirm.ask(
                 title: "End all \(Human.toolName(id)) sessions?",
@@ -1865,14 +1912,17 @@ final class LiveModel: ObservableObject {
     /// End the single highest-RSS session across all tools.
     func endHeaviest() {
         guard let top = heaviestSessions.first else {
-            focusNote = "Nothing heavy to end."
+            focusNote = "Nothing to end."
             return
         }
-        if top.needsEndConfirm {
+        let dynamicHeavy = isDynamicallyHeavy(top)
+        if needsEndConfirm(top) {
             let procNote = top.isMultiPid ? "\(top.nproc) processes" : "1 process"
             let ok = EndConfirm.ask(
-                title: "End heaviest session?",
-                message: "“\(top.title)” · \(Human.toolName(top.app)) · \(top.mem) · \(procNote).\nFrees the most RAM first."
+                title: dynamicHeavy ? "End heavy session?" : "End largest session?",
+                message: dynamicHeavy
+                    ? "“\(top.title)” · \(Human.toolName(top.app)) · \(top.mem) · \(procNote).\nThis is above this Mac's current heavy-load threshold."
+                    : "“\(top.title)” · \(Human.toolName(top.app)) · \(top.mem) · \(procNote).\nThis is the largest current AI load, not a heavy-load warning for this Mac."
             )
             if !ok { return }
         }
@@ -1932,7 +1982,7 @@ final class LiveModel: ObservableObject {
 
     private func performEndHeaviest() {
         let top = heaviestSessions.first
-        focusNote = "Ending heaviest session…"
+        focusNote = "Ending \(endLoadTitle.lowercased()) session…"
         let msg = EndSessionHelper.endHeaviest()
         afterEndUI(
             removedApp: top?.app,
@@ -2058,7 +2108,6 @@ final class LiveModel: ObservableObject {
         showIdleInstalled = snap.tools?.show_idle_installed ?? true
         sparksByApp = snap.sparks ?? [:]
         noteToolActivity(from: sessions)
-        toolRows = aggregateTools(sessions, meta: snap.tools)
         buzzProjects = aggregateBuzz(sessions)
         attentionRows = (snap.attention ?? []).map { item in
             let kind = item.kind
@@ -2130,6 +2179,11 @@ final class LiveModel: ObservableObject {
             resourceSwapTotalMb = r.swap_total_mb
             resourceThrashScore = r.thrash_score
             resourceAiMb = r.ai_rss_mb
+            resourceHeavyRssKb = r.heavy_rss_kb
+            resourceLearnedAiRssMb = r.learned_ai_rss_mb
+            resourceLearnedAiMemPct = r.learned_ai_mem_pct
+            resourceLearnedCpuCapacityPct = r.learned_cpu_capacity_pct
+            resourceLearnedThrashScore = r.learned_thrash_score
             // After self-manage recovery, still show brief success card
             if r.managed == true, let ml = r.managed_label, !ml.isEmpty {
                 resourceShow = true
@@ -2165,7 +2219,15 @@ final class LiveModel: ObservableObject {
             resourceSwapTotalMb = nil
             resourceThrashScore = nil
             resourceAiMb = nil
+            resourceHeavyRssKb = nil
+            resourceLearnedAiRssMb = nil
+            resourceLearnedAiMemPct = nil
+            resourceLearnedCpuCapacityPct = nil
+            resourceLearnedThrashScore = nil
         }
+
+        toolRows = aggregateTools(sessions, meta: snap.tools)
+        refreshHeaviest(from: allSessions)
 
         // Chip: interrupt-class only (needs you > limited > free RAM)
         let needN = attentionRows.filter { $0.isNeedsYou && $0.confidence != "low" }.count
@@ -2209,7 +2271,9 @@ final class LiveModel: ObservableObject {
             }.prefix(3)
         )
         if let top = heaviestSessions.first {
-            endHeavyPreview = "Ends: \(top.title) · \(top.mem)"
+            endHeavyPreview = isDynamicallyHeavy(top)
+                ? "Ends heavy: \(top.title) · \(top.mem)"
+                : "Largest load: \(top.title) · \(top.mem)"
         } else {
             endHeavyPreview = ""
         }
@@ -2541,7 +2605,12 @@ final class LiveModel: ObservableObject {
                     let countLabel = count == 1 ? "1 sess" : "\(count) sess"
                     detail = "\(load) · \(countLabel)"
                 }
-                let band = LoadBand.from(cpu: v.cpu, rssKb: v.rss, sessionCount: count)
+                let band = LoadBand.from(
+                    cpu: v.cpu,
+                    rssKb: v.rss,
+                    sessionCount: count,
+                    heavyRssKb: dynamicHeavyRssKb
+                )
                 return ToolRow(
                     id: app,
                     title: name,
@@ -3041,9 +3110,9 @@ struct LocalAIMonitorPanel: View {
                     GlassToolbarItem(title: "Resume", systemImage: "play.fill", action: model.resumeReadyWork)
                         .frame(maxWidth: .infinity)
                 }
-                GlassToolbarItem(title: "End heavy", systemImage: "flame.fill", action: model.endHeaviest)
+                GlassToolbarItem(title: model.endLoadTitle, systemImage: "flame.fill", action: model.endHeaviest)
                     .frame(maxWidth: .infinity)
-                    .help(model.endHeavyPreview.isEmpty ? "End heaviest session" : model.endHeavyPreview)
+                    .help(model.endHeavyPreview.isEmpty ? "End largest session" : model.endHeavyPreview)
                     .accessibilityHint(model.endHeavyPreview)
                 GlassToolbarItem(title: "More", systemImage: "ellipsis.circle", action: model.openMore)
                     .frame(maxWidth: .infinity)
@@ -3492,10 +3561,12 @@ struct LocalAIMonitorPanel: View {
                 GlassSectionLabel(title: "Heaviest sessions", systemImage: "flame.fill")
 
                 ForEach(Array(model.heaviestSessions.enumerated()), id: \.element.id) { idx, row in
+                    let dynamicHeavy = model.isDynamicallyHeavy(row)
+                    let badgeTitle = model.loadBadgeTitle(for: row, index: idx)
                     let rowBody = HStack(spacing: 8) {
                         Image(systemName: symbolForTool(row.app))
                             .font(.body)
-                            .foregroundStyle(idx == 0 ? Color.red : Color.secondary)
+                            .foregroundStyle(dynamicHeavy ? Color.red : Color.secondary)
                             .symbolRenderingMode(.hierarchical)
                             .frame(width: 20)
 
@@ -3514,20 +3585,20 @@ struct LocalAIMonitorPanel: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .layoutPriority(0)
 
-                        if idx == 0 {
-                            Text("End heavy")
+                        if let badgeTitle {
+                            Text(badgeTitle)
                                 .font(.caption2.weight(.bold))
-                                .foregroundStyle(.red)
+                                .foregroundStyle(dynamicHeavy ? .red : MonitorTheme.quietText)
                                 .lineLimit(1)
                                 .padding(.horizontal, 7)
                                 .padding(.vertical, 3)
-                                .background(Capsule().fill(Color.red.opacity(0.14)))
+                                .background(Capsule().fill(dynamicHeavy ? Color.red.opacity(0.14) : Color.secondary.opacity(0.12)))
                                 .layoutPriority(2)
                         }
 
                         MemLabel(
                             text: row.mem,
-                            tint: idx == 0 || row.isHeavy ? .red : .primary.opacity(0.9),
+                            tint: dynamicHeavy ? .red : .primary.opacity(0.9),
                             weight: .semibold,
                             size: .callout
                         )
@@ -3540,7 +3611,7 @@ struct LocalAIMonitorPanel: View {
                     .padding(.horizontal, 8)
                     .contentShape(Rectangle())
                     .background {
-                        if idx == 0 {
+                        if dynamicHeavy {
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
                                 .fill(Color.red.opacity(0.10))
                         }
@@ -3553,7 +3624,7 @@ struct LocalAIMonitorPanel: View {
                             model.openSession(row)
                         } label: { rowBody }
                         .buttonStyle(.plain)
-                        .accessibilityHint(idx == 0 ? "End heavy targets this session" : "Open session")
+                        .accessibilityHint(idx == 0 ? "\(model.endLoadTitle) targets this session" : "Open session")
                     } else {
                         // Not a button — tap does not claim open
                         rowBody
@@ -4025,10 +4096,10 @@ struct LocalAIMonitorPanel: View {
                     action: model.openParkingLot
                 )
                 moreRow(
-                    title: "End heaviest",
-                    subtitle: model.endHeavyPreview.isEmpty ? "No heavy AI target detected" : model.endHeavyPreview,
+                    title: model.endLoadTitle,
+                    subtitle: model.endHeavyPreview.isEmpty ? "No AI target detected" : model.endHeavyPreview,
                     systemImage: "flame.fill",
-                    tint: .red,
+                    tint: model.endLoadTitle == "End heavy" ? .red : .orange,
                     showsChevron: false,
                     action: model.endHeaviest
                 )
@@ -4349,7 +4420,7 @@ struct LocalAIMonitorPanel: View {
                     .lineLimit(1)
                 MemLabel(
                     text: row.mem,
-                    tint: row.isHeavy ? .red : .primary.opacity(0.85),
+                    tint: model.isDynamicallyHeavy(row) ? .red : .primary.opacity(0.85),
                     weight: .medium,
                     size: .caption
                 )
