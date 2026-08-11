@@ -250,6 +250,7 @@ def evaluate(
         band=band,
         headroom_mb=headroom_meta.get("headroom_mb"),
         thrash_score=headroom_meta.get("thrash_score"),
+        headroom_warn_mb=headroom_meta.get("headroom_warn_mb"),
         swap_used_mb=phys_dict.get("swap_used_mb"),
         swap_total_mb=phys_dict.get("swap_total_mb"),
         has_safe_candidate=candidate is not None,

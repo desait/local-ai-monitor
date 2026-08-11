@@ -48,6 +48,14 @@ def humanize_decision(d: PolicyDecision) -> Dict[str, Any]:
     free_mb = d.free_mb
     free_mb_i = int(round(free_mb)) if free_mb is not None else None
     ai_mb = _mb(d.ai_rss_kb)
+    memsize_mb = None
+    if isinstance(d.physics, dict):
+        try:
+            mb = d.physics.get("memsize_bytes")
+            memsize_mb = int(round(float(mb) / (1024.0 * 1024.0))) if mb else None
+        except (TypeError, ValueError):
+            memsize_mb = None
+    ai_mem_pct = round((ai_mb * 100.0 / memsize_mb), 1) if memsize_mb else None
 
     base: Dict[str, Any] = {
         "band": d.band,
@@ -66,6 +74,8 @@ def humanize_decision(d: PolicyDecision) -> Dict[str, Any]:
         "headroom_mb": headroom_i,
         "headroom_ok_mb": _round_mb(hr.get("headroom_ok_mb")),
         "headroom_warn_mb": _round_mb(hr.get("headroom_warn_mb")),
+        "memsize_mb": memsize_mb,
+        "ai_mem_pct": ai_mem_pct,
         "profile_status": hr.get("profile_status"),
         "profile_confidence": hr.get("profile_confidence"),
         "host_id": hr.get("host_id"),

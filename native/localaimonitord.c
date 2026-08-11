@@ -1336,7 +1336,7 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
     memset(procs, 0, MAX_PROCS * sizeof(Proc));
     memset(sess, 0, MAX_SESS * sizeof(Sess));
 
-    int free_pages = -1, page_size = 16384;
+    int free_pages = -1, page_size = 16384, cpu_count = 1;
     int speculative_pages = 0, purgeable_pages = 0, external_pages = 0;
     unsigned long long memsize = 0;
     SwapUsage swap;
@@ -1348,6 +1348,8 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
     scale_headroom_for_memsize(memsize);
     sysctl_int("vm.page_free_count", &free_pages);
     sysctl_int("hw.pagesize", &page_size);
+    if (sysctl_int("hw.ncpu", &cpu_count) != 0 || cpu_count <= 0)
+        cpu_count = 1;
     if (existing_ready_profile_matches(host_profile_path, memsize, page_size))
         g_profile_first_ms = t0 - 60000.0;
     double profile_age_s = (t0 - g_profile_first_ms) / 1000.0;
@@ -1391,25 +1393,6 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
     const char *pressure_state = "unknown";
     const char *recommendation = "refuse";
     int can_start_heavy = 0;
-    if (strcmp(band, "hard") == 0 || thrash_score >= THRASH_HARD) {
-        pressure_state = "freeze_risk";
-        recommendation = "avoid_new_heavy_work";
-    } else if (thrash_score >= THRASH_WARN) {
-        pressure_state = "stop_start_gate";
-        recommendation = "avoid_new_heavy_work";
-    } else if (strcmp(profile_status, "provisional") == 0) {
-        pressure_state = "calibrating";
-        recommendation = "do_nothing";
-        can_start_heavy = 1;
-    } else if (strcmp(band, "warn") == 0) {
-        pressure_state = "caution";
-        recommendation = "avoid_new_heavy_work";
-        can_start_heavy = 1;
-    } else if (strcmp(band, "ok") == 0) {
-        pressure_state = "ok";
-        recommendation = "do_nothing";
-        can_start_heavy = 1;
-    }
 
     int n = run_ps(procs, MAX_PROCS);
     if (n < 0) {
@@ -1592,18 +1575,50 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
         int swap_used_i = swap.ok ? (int)(swap.used_bytes / (1024ULL * 1024ULL)) : -1;
         int swap_total_i = swap.ok ? (int)(swap.total_bytes / (1024ULL * 1024ULL)) : -1;
         int ai_mb = (int)(total_rss / 1024);
+        int mem_mb_i = memsize > 0 ? (int)(memsize / (1024ULL * 1024ULL)) : -1;
+        double ai_mem_pct = mem_mb_i > 0 ? ((double)ai_mb * 100.0 / (double)mem_mb_i) : 0.0;
+        double cpu_capacity_pct = cpu_count > 0 ? (total_cpu / (double)cpu_count) : total_cpu;
+        if (cpu_capacity_pct < 0.0)
+            cpu_capacity_pct = 0.0;
+        if (cpu_capacity_pct > 100.0)
+            cpu_capacity_pct = 100.0;
+        int low_room = headroom_mb >= 0.0 && headroom_mb < g_headroom_warn_mb;
+        int loaded_host = ai_mem_pct >= 25.0 || cpu_capacity_pct >= 70.0;
+        if (!physics_ok) {
+            pressure_state = "unknown";
+            recommendation = "refuse";
+        } else if (low_room && thrash_score >= THRASH_HARD) {
+            pressure_state = "freeze_risk";
+            recommendation = "avoid_new_heavy_work";
+        } else if (low_room || (thrash_score >= THRASH_HARD && loaded_host)) {
+            pressure_state = "stop_start_gate";
+            recommendation = "avoid_new_heavy_work";
+        } else if (strcmp(profile_status, "provisional") == 0) {
+            pressure_state = "calibrating";
+            recommendation = "do_nothing";
+            can_start_heavy = 1;
+        } else if (strcmp(band, "warn") == 0 || strcmp(band, "hard") == 0 ||
+                   thrash_score >= THRASH_WARN) {
+            pressure_state = "caution";
+            recommendation = "watch_capacity";
+            can_start_heavy = 1;
+        } else {
+            pressure_state = "ok";
+            recommendation = "do_nothing";
+            can_start_heavy = 1;
+        }
         const char *chip =
             !show ? ""
                   : (strcmp(profile_status, "provisional") == 0
                          ? "Monitor · Calibrating"
-                         : (strcmp(band, "hard") == 0 ? "Monitor · Protect work"
-                                                       : "Monitor · Watch"));
+                         : (str_eq(pressure_state, "freeze_risk") ? "Monitor · Protect work"
+                                                                   : "Monitor · Watch"));
         const char *title =
             !show ? ""
                   : (strcmp(profile_status, "provisional") == 0
                          ? "Calibrating this Mac"
-                         : (strcmp(band, "hard") == 0 ? "Swap / headroom risk is high"
-                                                       : "Keep an eye on capacity"));
+                         : (str_eq(pressure_state, "freeze_risk") ? "Swap / headroom risk is high"
+                                                                  : "Keep an eye on capacity"));
         char detail[512] = "";
         char clab[160] = "";
         char capp[64] = "";
@@ -1695,6 +1710,10 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
         if (apf(json, JSON_CAP, &off,
                 "    \"headroom_ok_mb\": %d,\n"
                 "    \"headroom_warn_mb\": %d,\n"
+                "    \"memsize_mb\": %d,\n"
+                "    \"ai_mem_pct\": %.1f,\n"
+                "    \"cpu_count\": %d,\n"
+                "    \"cpu_capacity_pct\": %.1f,\n"
                 "    \"profile_status\": \"%s\",\n"
                 "    \"profile_age_s\": %.1f,\n"
                 "    \"profile_confidence\": %.3f,\n"
@@ -1713,6 +1732,7 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
                 "    \"auto_end\": false\n"
                 "  },\n",
                 (int)(g_headroom_ok_mb + 0.5), (int)(g_headroom_warn_mb + 0.5),
+                mem_mb_i, ai_mem_pct, cpu_count, cpu_capacity_pct,
                 profile_status, profile_age_s, profile_confidence,
                 ai_mb, thrash_score, pressure_state, recommendation,
                 can_start_heavy ? "true" : "false",

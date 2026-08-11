@@ -121,6 +121,10 @@ struct LiveSnap: Decodable {
         let headroom_mb: Int?
         let headroom_ok_mb: Int?
         let headroom_warn_mb: Int?
+        let memsize_mb: Int?
+        let ai_mem_pct: Double?
+        let cpu_count: Int?
+        let cpu_capacity_pct: Double?
         let profile_status: String?
         let profile_age_s: Double?
         let profile_confidence: Double?
@@ -405,7 +409,7 @@ enum Human {
         case "ok":
             return "RAM headroom is healthy and swap activity is quiet."
         case "caution":
-            return "Swap is in use. Keep current work going; avoid stacking heavy jobs."
+            return "Capacity is under watch, but starts are still allowed."
         case "stop_start_gate":
             return "RAM headroom is thin or swap is high. Reclaim idle load before adding work."
         case "freeze_risk":
@@ -703,6 +707,27 @@ enum MonitorCopy {
         return .green
     }
 
+    static func percentLabel(_ pct: Double?) -> String {
+        guard let pct else { return "Unknown" }
+        return String(format: "%.0f%%", pct)
+    }
+
+    static func aiMemTint(_ pct: Double?) -> Color {
+        guard let pct else { return .secondary }
+        if pct >= 35 { return .red }
+        if pct >= 25 { return .orange }
+        if pct >= 15 { return .yellow }
+        return .green
+    }
+
+    static func cpuTint(_ pct: Double?) -> Color {
+        guard let pct else { return .secondary }
+        if pct >= 85 { return .red }
+        if pct >= 65 { return .orange }
+        if pct >= 40 { return .yellow }
+        return .green
+    }
+
     static func actionTitle(state: String, canStart: Bool) -> String {
         switch state {
         case "freeze_risk":
@@ -710,7 +735,7 @@ enum MonitorCopy {
         case "stop_start_gate":
             return "Reduce load before adding AI"
         case "caution":
-            return "Avoid stacking heavy work"
+            return "Capacity is available"
         default:
             return canStart ? "No action needed" : "Reduce load before adding AI"
         }
@@ -723,7 +748,7 @@ enum MonitorCopy {
         case "stop_start_gate":
             return "Review inactive apps or park helpers first."
         case "caution":
-            return "Current work is fine. New heavy sessions may crowd the Mac."
+            return "This Mac is under watch, but starts are still allowed."
         default:
             return canStart ? "Monitor will warn you before starts become risky." : "Review inactive apps or park helpers first."
         }
@@ -1557,6 +1582,10 @@ final class LiveModel: ObservableObject {
     @Published var resourceHeadroomMb: Int?
     @Published var resourceHeadroomOkMb: Int?
     @Published var resourceHeadroomWarnMb: Int?
+    @Published var resourceMemsizeMb: Int?
+    @Published var resourceAiMemPct: Double?
+    @Published var resourceCpuCount: Int?
+    @Published var resourceCpuCapacityPct: Double?
     @Published var resourceProfileStatus: String = "unknown"
     @Published var resourceProfileConfidence: Double?
     @Published var resourceSwapUsedMb: Int?
@@ -2091,6 +2120,10 @@ final class LiveModel: ObservableObject {
             resourceHeadroomMb = r.headroom_mb
             resourceHeadroomOkMb = r.headroom_ok_mb
             resourceHeadroomWarnMb = r.headroom_warn_mb
+            resourceMemsizeMb = r.memsize_mb
+            resourceAiMemPct = r.ai_mem_pct
+            resourceCpuCount = r.cpu_count
+            resourceCpuCapacityPct = r.cpu_capacity_pct
             resourceProfileStatus = r.profile_status ?? "unknown"
             resourceProfileConfidence = r.profile_confidence
             resourceSwapUsedMb = r.swap_used_mb
@@ -2122,6 +2155,10 @@ final class LiveModel: ObservableObject {
             resourceHeadroomMb = nil
             resourceHeadroomOkMb = nil
             resourceHeadroomWarnMb = nil
+            resourceMemsizeMb = nil
+            resourceAiMemPct = nil
+            resourceCpuCount = nil
+            resourceCpuCapacityPct = nil
             resourceProfileStatus = "unknown"
             resourceProfileConfidence = nil
             resourceSwapUsedMb = nil
@@ -2137,17 +2174,21 @@ final class LiveModel: ObservableObject {
             titleText = needN == 1 ? "\(Brand.chip) · Needs you" : "\(Brand.chip) · \(needN) need you"
         } else if limitedN > 0 {
             titleText = "\(Brand.chip) · Limited"
-        } else if resourceShow, resourcePressureState != "ok", !resourceChip.isEmpty {
+        } else if resourceShow,
+                  (resourcePressureState == "stop_start_gate" || resourcePressureState == "freeze_risk"),
+                  !resourceChip.isEmpty {
             titleText = resourceChip
         }
         titleText += LivePathConfig.labChipSuffix
 
         // When headroom/freeze-risk is elevated, keep the top card distinct from
         // the resource card title below. The resource card owns the headroom headline.
-        if resourceShow, resourceBand == "hard" {
+        if resourceShow, resourcePressureState == "freeze_risk" {
             sentence = "Active work is protected. Reclaim idle load below before adding more."
-        } else if resourceShow, resourceBand == "warn", sentence == "All AI tools look fine." {
+        } else if resourceShow, !resourceCanStartHeavy {
             sentence = "Active work is stable. New AI starts are gated for now."
+        } else if resourceShow, resourcePressureState == "caution" {
+            sentence = "This Mac has room for more work. Capacity is under watch, not blocked."
         }
 
         if case .editTools = nav {
@@ -3106,12 +3147,12 @@ struct LocalAIMonitorPanel: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Monitor")
+                    Text("Machine")
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(MonitorTheme.mutedText)
-                    Text(Human.mbShort(model.resourceHeadroomMb ?? -1))
+                    Text(MonitorCopy.percentLabel(model.resourceAiMemPct))
                         .font(.title2.monospacedDigit().weight(.bold))
-                        .foregroundStyle(MonitorCopy.roomTint(model.resourceHeadroomMb, okMb: model.resourceHeadroomOkMb, warnMb: model.resourceHeadroomWarnMb))
+                        .foregroundStyle(MonitorCopy.aiMemTint(model.resourceAiMemPct))
                 }
                 Spacer(minLength: 0)
                 VStack(alignment: .trailing, spacing: 2) {
@@ -3131,7 +3172,8 @@ struct LocalAIMonitorPanel: View {
                     used: model.resourceSwapUsedMb,
                     total: model.resourceSwapTotalMb
                 )
-                let ai = MonitorCopy.aiRatio(model.resourceAiMb)
+                let ai = min(1.0, max(0.0, (model.resourceAiMemPct ?? 0) / 100.0))
+                let cpu = min(1.0, max(0.0, (model.resourceCpuCapacityPct ?? 0) / 100.0))
                 let width = max(1, geo.size.width)
                 ZStack(alignment: .leading) {
                     Capsule()
@@ -3147,9 +3189,13 @@ struct LocalAIMonitorPanel: View {
                         .frame(width: max(5, width * CGFloat(spill)))
                         .offset(x: width * 0.58)
                     Capsule()
-                        .fill(MonitorCopy.aiTint(model.resourceAiMb).opacity(0.88))
-                        .frame(width: max(5, width * CGFloat(ai) * 0.34))
+                        .fill(MonitorCopy.aiMemTint(model.resourceAiMemPct).opacity(0.88))
+                        .frame(width: max(5, width * CGFloat(ai)))
                         .offset(x: width * 0.08)
+                    Capsule()
+                        .fill(MonitorCopy.cpuTint(model.resourceCpuCapacityPct).opacity(0.65))
+                        .frame(width: max(5, width * CGFloat(cpu)))
+                        .offset(x: width * 0.18)
                 }
                 .clipShape(Capsule())
             }
@@ -3157,12 +3203,16 @@ struct LocalAIMonitorPanel: View {
 
             VStack(spacing: 6) {
                 HStack(spacing: 6) {
-                    capacityMetric(title: "Room", value: Human.mbShort(model.resourceHeadroomMb ?? -1), tint: MonitorCopy.roomTint(model.resourceHeadroomMb, okMb: model.resourceHeadroomOkMb, warnMb: model.resourceHeadroomWarnMb))
+                    capacityMetric(title: "RAM", value: Human.mbShort(model.resourceMemsizeMb ?? -1), tint: .green)
                     capacityMetric(title: "Spill", value: storageBackupValue, tint: MonitorCopy.backupTint(used: model.resourceSwapUsedMb, total: model.resourceSwapTotalMb))
                 }
                 HStack(spacing: 6) {
+                    capacityMetric(title: "CPU", value: MonitorCopy.percentLabel(model.resourceCpuCapacityPct), tint: MonitorCopy.cpuTint(model.resourceCpuCapacityPct))
+                    capacityMetric(title: "AI", value: "\(Human.mbShort(model.resourceAiMb ?? -1)) · \(MonitorCopy.percentLabel(model.resourceAiMemPct))", tint: MonitorCopy.aiMemTint(model.resourceAiMemPct))
+                }
+                HStack(spacing: 6) {
+                    capacityMetric(title: "Room", value: Human.mbShort(model.resourceHeadroomMb ?? -1), tint: MonitorCopy.roomTint(model.resourceHeadroomMb, okMb: model.resourceHeadroomOkMb, warnMb: model.resourceHeadroomWarnMb))
                     capacityMetric(title: "Motion", value: MonitorCopy.shufflingLabel(model.resourceThrashScore), tint: MonitorCopy.shufflingTint(model.resourceThrashScore))
-                    capacityMetric(title: "AI", value: Human.mbShort(model.resourceAiMb ?? -1), tint: MonitorCopy.aiTint(model.resourceAiMb))
                 }
             }
         }
@@ -3189,7 +3239,7 @@ struct LocalAIMonitorPanel: View {
         if model.resourcePressureState == "calibrating" { return "Local baseline" }
         if model.resourcePressureState == "freeze_risk" { return "Save work first" }
         if !model.resourceCanStartHeavy { return "No new heavy work" }
-        if model.resourcePressureState == "caution" { return "Do not stack load" }
+        if model.resourcePressureState == "caution" { return "Starts allowed" }
         return "Safe to continue"
     }
 
@@ -3251,7 +3301,7 @@ struct LocalAIMonitorPanel: View {
     }
 
     private var capacityActionCard: some View {
-        let needsAction = !model.resourceCanStartHeavy || model.resourcePressureState != "ok"
+        let needsAction = !model.resourceCanStartHeavy || model.resourcePressureState == "freeze_risk"
         return Button {
             if needsAction {
                 model.openBrowserCleanup()

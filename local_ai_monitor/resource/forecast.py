@@ -56,6 +56,7 @@ def build_forecast(
     band: str,
     headroom_mb: Any,
     thrash_score: Any,
+    headroom_warn_mb: Any = None,
     swap_used_mb: Any = None,
     swap_total_mb: Any = None,
     has_safe_candidate: bool = False,
@@ -63,6 +64,7 @@ def build_forecast(
 ) -> PressureForecast:
     headroom = _float_or_none(headroom_mb)
     thrash = _float_or_none(thrash_score) or 0.0
+    warn_floor = _float_or_none(headroom_warn_mb) or 1200.0
     swap_used = _float_or_none(swap_used_mb)
     swap_total = _float_or_none(swap_total_mb)
     swap_ratio = None
@@ -84,7 +86,8 @@ def build_forecast(
             active_work_only=active_work_only,
         )
 
-    if band == "hard" or thrash >= 25.0:
+    low_room = headroom < warn_floor
+    if (band == "hard" and low_room) or (thrash >= 25.0 and low_room):
         if has_safe_candidate:
             rec = REC_RECLAIM_IDLE
             reason = "freeze risk; safe idle reclaim exists"
@@ -109,7 +112,7 @@ def build_forecast(
         )
 
     high_static_swap = bool(swap_ratio is not None and swap_ratio >= 0.50)
-    if thrash >= 8.0:
+    if thrash >= 8.0 and low_room:
         rec = REC_RECLAIM_IDLE if has_safe_candidate else REC_AVOID_NEW_HEAVY
         return PressureForecast(
             state=STATE_STOP_START_GATE,
