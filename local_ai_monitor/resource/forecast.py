@@ -109,15 +109,28 @@ def build_forecast(
         )
 
     high_static_swap = bool(swap_ratio is not None and swap_ratio >= 0.50)
-    if band == "warn" or thrash >= 8.0 or high_static_swap:
-        # This is the "buy time" state: do not kill active work, but block
-        # new heavy starts until headroom/swap churn improves.
-        rec = REC_RECLAIM_IDLE if has_safe_candidate and thrash >= 8.0 else REC_AVOID_NEW_HEAVY
+    if thrash >= 8.0:
+        rec = REC_RECLAIM_IDLE if has_safe_candidate else REC_AVOID_NEW_HEAVY
         return PressureForecast(
-            state=STATE_STOP_START_GATE if band == "warn" or thrash >= 8.0 else STATE_CAUTION,
+            state=STATE_STOP_START_GATE,
             recommendation=rec,
             can_start_heavy=False,
-            reason="headroom/swap state says avoid starting new heavy work",
+            reason="swap/page churn says avoid starting new heavy work",
+            headroom_mb=headroom,
+            thrash_score=thrash,
+            swap_used_mb=swap_used,
+            swap_total_mb=swap_total,
+            swap_ratio=swap_ratio,
+            has_safe_candidate=has_safe_candidate,
+            active_work_only=active_work_only,
+        )
+
+    if band == "warn" or high_static_swap:
+        return PressureForecast(
+            state=STATE_CAUTION,
+            recommendation=REC_AVOID_NEW_HEAVY,
+            can_start_heavy=True,
+            reason="capacity is watch-level; starts remain allowed while churn is quiet",
             headroom_mb=headroom,
             thrash_score=thrash,
             swap_used_mb=swap_used,

@@ -203,6 +203,11 @@ def evaluate(
             "thrash_score": hr.thrash_score,
             "cheap_mb": hr.cheap_mb,
             "file_backed_mb": hr.file_backed_mb,
+            "headroom_ok_mb": hr.headroom_ok_mb,
+            "headroom_warn_mb": hr.headroom_warn_mb,
+            "profile_status": hr.profile_status,
+            "profile_confidence": hr.profile_confidence,
+            "host_id": hr.host_id,
             "headroom_reason": hr.reason,
             "headroom_band": hr.band,
         }
@@ -250,6 +255,18 @@ def evaluate(
         has_safe_candidate=candidate is not None,
         active_work_only=active_work_only,
     )
+    try:
+        from local_ai_monitor.resource.host_profile import append_usage_sample
+
+        append_usage_sample(
+            state=state,
+            host_id=headroom_meta.get("host_id"),
+            headroom_mb=headroom_meta.get("headroom_mb"),
+            thrash_score=float(headroom_meta.get("thrash_score") or 0.0),
+            ai_rss_mb=ai_rss / 1024.0 if ai_rss else None,
+        )
+    except Exception:
+        pass
     phys_dict["forecast"] = forecast.to_dict()
 
     if band == "unknown":

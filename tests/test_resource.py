@@ -82,7 +82,19 @@ class TestPolicy(unittest.TestCase):
         )
         self.assertEqual(f.state, STATE_CAUTION)
         self.assertEqual(f.recommendation, REC_AVOID_NEW_HEAVY)
-        self.assertFalse(f.can_start_heavy)
+        self.assertTrue(f.can_start_heavy)
+
+    def test_forecast_warn_without_thrash_is_watch_not_gate(self):
+        f = build_forecast(
+            band="warn",
+            headroom_mb=2600,
+            thrash_score=0,
+            swap_used_mb=0,
+            swap_total_mb=3072,
+        )
+        self.assertEqual(f.state, STATE_CAUTION)
+        self.assertEqual(f.recommendation, REC_AVOID_NEW_HEAVY)
+        self.assertTrue(f.can_start_heavy)
 
     def test_forecast_warn_gates_new_starts(self):
         f = build_forecast(

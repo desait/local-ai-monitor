@@ -74,6 +74,14 @@ static int g_hard_pages = HARD_PAGES_DEFAULT;
 static double g_headroom_ok_mb = HEADROOM_OK_MB;
 static double g_headroom_warn_mb = HEADROOM_WARN_MB;
 
+static double clamp_double(double v, double lo, double hi) {
+    if (v < lo)
+        return lo;
+    if (v > hi)
+        return hi;
+    return v;
+}
+
 typedef struct {
     int enable;       /* --act */
     int dry_run;      /* --dry-run */
@@ -140,6 +148,7 @@ static int g_pool_ready;
 static VmCounters g_prev_vm;
 static double g_prev_vm_ms;
 static int g_prev_vm_ready;
+static double g_profile_first_ms;
 
 static int pool_init(void) {
     if (g_pool_ready)
@@ -424,6 +433,13 @@ static int is_session_root(const Proc *p) {
             return contains(p->cmd, "BUZZ_ACP_SESSION_TITLE=") ||
                    contains(p->cmd, "buzz_channel_trace") ||
                    contains(p->cmd, "XPC_SERVICE_NAME=com.buzz");
+        }
+        if (contains(p->cmd, "BUZZ_ACP_SESSION_TITLE=") &&
+            !str_eq(p->base, "buzz-acp") &&
+            !contains(p->cmd, "XPC_SERVICE_NAME=com.buzz.") &&
+            !contains(p->cmd, "/.buzz/PROJECTS/") &&
+            !contains(p->cmd, "/.buzz/REPOS/")) {
+            return 0;
         }
         return 1;
     }
@@ -822,6 +838,25 @@ static int write_atomic(const char *path, const char *body) {
     return 0;
 }
 
+static int existing_ready_profile_matches(const char *path, unsigned long long memsize,
+                                          int page_size) {
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return 0;
+    char buf[2048];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+    if (!contains(buf, "\"status\": \"ready\""))
+        return 0;
+    char needle[96];
+    snprintf(needle, sizeof(needle), "\"memsize_bytes\": %llu", memsize);
+    if (!contains(buf, needle))
+        return 0;
+    snprintf(needle, sizeof(needle), "\"page_size\": %d", page_size);
+    return contains(buf, needle);
+}
+
 static void ensure_parent_dir(const char *path) {
     char dir[512];
     snprintf(dir, sizeof(dir), "%s", path);
@@ -865,6 +900,26 @@ static int sysctl_int(const char *name, int *out) {
     if (sysctlbyname(name, out, &len, NULL, 0) != 0)
         return -1;
     return 0;
+}
+
+static int sysctl_ull(const char *name, unsigned long long *out) {
+    size_t len = sizeof(unsigned long long);
+    if (sysctlbyname(name, out, &len, NULL, 0) != 0)
+        return -1;
+    return 0;
+}
+
+static void scale_headroom_for_memsize(unsigned long long memsize_bytes) {
+    if (memsize_bytes == 0) {
+        g_headroom_ok_mb = HEADROOM_OK_MB;
+        g_headroom_warn_mb = HEADROOM_WARN_MB;
+        return;
+    }
+    double mem_mb = (double)memsize_bytes / (1024.0 * 1024.0);
+    g_headroom_ok_mb = clamp_double(mem_mb * 0.125, 1500.0, 4096.0);
+    g_headroom_warn_mb = clamp_double(mem_mb * 0.040, 600.0, 1400.0);
+    if (g_headroom_warn_mb >= g_headroom_ok_mb)
+        g_headroom_warn_mb = clamp_double(g_headroom_ok_mb * 0.40, 600.0, 1400.0);
 }
 
 static int sysctl_swapusage(SwapUsage *out) {
@@ -949,7 +1004,10 @@ static double thrash_score_from_deltas(double dt_s, unsigned long long d_swapins
         swap_r = 500.0;
     if (page_r > 5000.0)
         page_r = 5000.0;
-    return THRASH_SWAP_WEIGHT * swap_r + THRASH_PAGEOUT_WEIGHT * page_r;
+    double swap_term = THRASH_SWAP_WEIGHT * swap_r;
+    if (swap_term <= 0.0)
+        return 0.0;
+    return swap_term + THRASH_PAGEOUT_WEIGHT * page_r;
 }
 
 /* Product band = reclaimable headroom + swap/pageout activity, never free pages alone. */
@@ -1260,11 +1318,14 @@ static void maybe_soft_stop(const char *state_dir, const Sess *sess, int ns, con
 }
 
 static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sample_interval_s) {
-    char live_path[512], phys_path[512];
+    char live_path[512], phys_path[512], host_profile_path[512];
     snprintf(live_path, sizeof(live_path), "%s/live.min.json", state_dir);
     snprintf(phys_path, sizeof(phys_path), "%s/physics.json", state_dir);
+    snprintf(host_profile_path, sizeof(host_profile_path), "%s/host-profile.json", state_dir);
 
     double t0 = now_ms();
+    if (g_profile_first_ms <= 0.0)
+        g_profile_first_ms = t0;
     if (pool_init() != 0) {
         fprintf(stderr, "local-ai-monitord: pool alloc failed\n");
         return 1;
@@ -1277,12 +1338,23 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
 
     int free_pages = -1, page_size = 16384;
     int speculative_pages = 0, purgeable_pages = 0, external_pages = 0;
+    unsigned long long memsize = 0;
     SwapUsage swap;
     VmCounters vmc;
     sysctl_swapusage(&swap);
     sample_vm_counters(&vmc);
+    if (sysctl_ull("hw.memsize", &memsize) != 0)
+        memsize = 0;
+    scale_headroom_for_memsize(memsize);
     sysctl_int("vm.page_free_count", &free_pages);
     sysctl_int("hw.pagesize", &page_size);
+    if (existing_ready_profile_matches(host_profile_path, memsize, page_size))
+        g_profile_first_ms = t0 - 60000.0;
+    double profile_age_s = (t0 - g_profile_first_ms) / 1000.0;
+    const char *profile_status = profile_age_s >= 60.0 ? "ready" : "provisional";
+    double profile_confidence = clamp_double((profile_age_s / 60.0) * 0.5, 0.0, 0.5);
+    if (strcmp(profile_status, "ready") == 0)
+        profile_confidence = 1.0;
     if (sysctl_int("vm.page_speculative_count", &speculative_pages) != 0)
         speculative_pages = 0;
     if (sysctl_int("vm.page_purgeable_count", &purgeable_pages) != 0)
@@ -1322,9 +1394,17 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
     if (strcmp(band, "hard") == 0 || thrash_score >= THRASH_HARD) {
         pressure_state = "freeze_risk";
         recommendation = "avoid_new_heavy_work";
-    } else if (strcmp(band, "warn") == 0 || thrash_score >= THRASH_WARN) {
+    } else if (thrash_score >= THRASH_WARN) {
         pressure_state = "stop_start_gate";
         recommendation = "avoid_new_heavy_work";
+    } else if (strcmp(profile_status, "provisional") == 0) {
+        pressure_state = "calibrating";
+        recommendation = "do_nothing";
+        can_start_heavy = 1;
+    } else if (strcmp(band, "warn") == 0) {
+        pressure_state = "caution";
+        recommendation = "avoid_new_heavy_work";
+        can_start_heavy = 1;
     } else if (strcmp(band, "ok") == 0) {
         pressure_state = "ok";
         recommendation = "do_nothing";
@@ -1391,6 +1471,7 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
                  "  \"cheap_mb\": %.1f,\n"
                  "  \"file_backed_mb\": %.1f,\n"
                  "  \"headroom_mb\": %.1f,\n"
+                 "  \"memsize_bytes\": %llu,\n"
                  "  \"swap_total_mb\": %.1f,\n"
                  "  \"swap_used_mb\": %.1f,\n"
                  "  \"swap_avail_mb\": %.1f,\n"
@@ -1403,22 +1484,49 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
                  "  \"band_source\": \"headroom+swap\",\n"
                  "  \"headroom_ok_mb\": %.0f,\n"
                  "  \"headroom_warn_mb\": %.0f,\n"
+                 "  \"profile_status\": \"%s\",\n"
+                 "  \"profile_age_s\": %.1f,\n"
+                 "  \"profile_confidence\": %.3f,\n"
                  "  \"waterline_warn\": %d,\n"
                  "  \"waterline_hard\": %d\n"
                  "}\n",
                  ts, physics_ok ? "true" : "false", page_size, free_pages, free_mb,
                  speculative_pages, purgeable_pages, external_pages, cheap_mb, file_mb,
-                 headroom_mb,
+                 headroom_mb, memsize,
                  swap.ok ? swap.total_bytes / (1024.0 * 1024.0) : -1.0,
                  swap.ok ? swap.used_bytes / (1024.0 * 1024.0) : -1.0,
                  swap.ok ? swap.avail_bytes / (1024.0 * 1024.0) : -1.0,
                  vmc.ok ? vmc.swapins : 0ULL, vmc.ok ? vmc.swapouts : 0ULL,
                  vmc.ok ? vmc.pageouts : 0ULL, vmc.ok ? vmc.compressor_pages : 0ULL,
-                 thrash_score, band, g_headroom_ok_mb, g_headroom_warn_mb, g_warn_pages,
+                 thrash_score, band, g_headroom_ok_mb, g_headroom_warn_mb,
+                 profile_status, profile_age_s, profile_confidence, g_warn_pages,
                  g_hard_pages);
         ensure_parent_dir(phys_path);
         if (write_atomic(phys_path, body) != 0)
             fprintf(stderr, "local-ai-monitord: physics write failed\n");
+    }
+
+    {
+        char body[1024];
+        snprintf(body, sizeof(body),
+                 "{\n"
+                 "  \"version\": 1,\n"
+                 "  \"source\": \"local-ai-monitord\",\n"
+                 "  \"host_id\": \"native-v1:%llu:%d\",\n"
+                 "  \"memsize_bytes\": %llu,\n"
+                 "  \"page_size\": %d,\n"
+                 "  \"status\": \"%s\",\n"
+                 "  \"confidence\": %.3f,\n"
+                 "  \"profile_age_s\": %.1f,\n"
+                 "  \"headroom_ok_mb\": %.0f,\n"
+                 "  \"headroom_warn_mb\": %.0f,\n"
+                 "  \"threshold_source\": \"host-bounded:v1\"\n"
+                 "}\n",
+                 memsize, page_size, memsize, page_size, profile_status,
+                 profile_confidence, profile_age_s, g_headroom_ok_mb, g_headroom_warn_mb);
+        ensure_parent_dir(host_profile_path);
+        if (write_atomic(host_profile_path, body) != 0)
+            fprintf(stderr, "local-ai-monitord: host profile write failed\n");
     }
 
     size_t off = 0;
@@ -1476,7 +1584,9 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
 
     /* resource — headroom / freeze-risk copy (never free-page panic titles) */
     {
-        int show = (strcmp(band, "warn") == 0 || strcmp(band, "hard") == 0 || !can_start_heavy);
+        int show = (strcmp(profile_status, "provisional") == 0 ||
+                    strcmp(band, "warn") == 0 || strcmp(band, "hard") == 0 ||
+                    !can_start_heavy);
         int free_i = free_mb >= 0 ? (int)(free_mb + 0.5) : -1;
         int hr_i = headroom_mb >= 0 ? (int)(headroom_mb + 0.5) : -1;
         int swap_used_i = swap.ok ? (int)(swap.used_bytes / (1024ULL * 1024ULL)) : -1;
@@ -1484,11 +1594,16 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
         int ai_mb = (int)(total_rss / 1024);
         const char *chip =
             !show ? ""
-                  : (strcmp(band, "hard") == 0 ? "Monitor · Protect work" : "Monitor · Gate closed");
+                  : (strcmp(profile_status, "provisional") == 0
+                         ? "Monitor · Calibrating"
+                         : (strcmp(band, "hard") == 0 ? "Monitor · Protect work"
+                                                       : "Monitor · Watch"));
         const char *title =
             !show ? ""
-                  : (strcmp(band, "hard") == 0 ? "Swap / headroom risk is high"
-                                               : "Do not start more heavy work yet");
+                  : (strcmp(profile_status, "provisional") == 0
+                         ? "Calibrating this Mac"
+                         : (strcmp(band, "hard") == 0 ? "Swap / headroom risk is high"
+                                                       : "Keep an eye on capacity"));
         char detail[512] = "";
         char clab[160] = "";
         char capp[64] = "";
@@ -1497,7 +1612,7 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
         fmt_mb(hr_s, sizeof(hr_s), hr_i);
         fmt_mb(swap_s, sizeof(swap_s), swap_used_i);
         fmt_mb(ai_s, sizeof(ai_s), ai_mb);
-        if (show && cand >= 0) {
+        if (show && cand >= 0 && !can_start_heavy) {
             recommendation = "reclaim_idle";
             jesc(capp, sizeof(capp), sess[cand].app);
             jesc(csid, sizeof(csid), sess[cand].session_id);
@@ -1513,10 +1628,17 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
                      "Active work is never auto-killed.",
                      hr_s, swap_s, thrash_score, ai_s, sess[cand].app, cand_s);
         } else if (show) {
-            snprintf(detail, sizeof(detail),
-                     "About %s reclaimable headroom. Swap is using %s. "
-                     "Thrash score %.1f. AI tools are using about %s.",
-                     hr_s, swap_s, thrash_score, ai_s);
+            if (strcmp(profile_status, "provisional") == 0) {
+                snprintf(detail, sizeof(detail),
+                         "About %s reclaimable headroom. This Mac is learning its first local baseline. "
+                         "Green starts around %.0f MB on this host. Swap is using %s. Thrash score %.1f.",
+                         hr_s, g_headroom_ok_mb, swap_s, thrash_score);
+            } else {
+                snprintf(detail, sizeof(detail),
+                         "About %s reclaimable headroom. This Mac is calibrated around %.0f MB green / %.0f MB hold. "
+                         "Swap is using %s. Thrash score %.1f. AI tools are using about %s.",
+                         hr_s, g_headroom_ok_mb, g_headroom_warn_mb, swap_s, thrash_score, ai_s);
+            }
         }
         char echip[80], etitle[160], edetail[640], eclab[200];
         jesc(echip, sizeof(echip), chip);
@@ -1571,6 +1693,11 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
         } else if (apf(json, JSON_CAP, &off, "    \"swap_total_mb\": null,\n") != 0)
             goto oom;
         if (apf(json, JSON_CAP, &off,
+                "    \"headroom_ok_mb\": %d,\n"
+                "    \"headroom_warn_mb\": %d,\n"
+                "    \"profile_status\": \"%s\",\n"
+                "    \"profile_age_s\": %.1f,\n"
+                "    \"profile_confidence\": %.3f,\n"
                 "    \"action_label\": \"Reclaim idle\",\n"
                 "    \"ai_rss_mb\": %d,\n"
                 "    \"thrash_score\": %.2f,\n"
@@ -1585,6 +1712,8 @@ static int sample_once(const char *state_dir, int quiet, ActOpts *act, int sampl
                 "    \"urgency\": \"%s\",\n"
                 "    \"auto_end\": false\n"
                 "  },\n",
+                (int)(g_headroom_ok_mb + 0.5), (int)(g_headroom_warn_mb + 0.5),
+                profile_status, profile_age_s, profile_confidence,
                 ai_mb, thrash_score, pressure_state, recommendation,
                 can_start_heavy ? "true" : "false",
                 can_start_heavy ? "" : "Checkpoint current AI work before continuing.",

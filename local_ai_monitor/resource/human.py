@@ -64,6 +64,11 @@ def humanize_decision(d: PolicyDecision) -> Dict[str, Any]:
         "action_label": "Reclaim idle",
         "free_mb": free_mb_i,  # expert/debug only — not primary copy
         "headroom_mb": headroom_i,
+        "headroom_ok_mb": _round_mb(hr.get("headroom_ok_mb")),
+        "headroom_warn_mb": _round_mb(hr.get("headroom_warn_mb")),
+        "profile_status": hr.get("profile_status"),
+        "profile_confidence": hr.get("profile_confidence"),
+        "host_id": hr.get("host_id"),
         "swap_used_mb": _round_mb(d.physics.get("swap_used_mb")) if isinstance(d.physics, dict) else None,
         "swap_total_mb": _round_mb(d.physics.get("swap_total_mb")) if isinstance(d.physics, dict) else None,
         "thrash_score": thrash_f,
@@ -72,14 +77,16 @@ def humanize_decision(d: PolicyDecision) -> Dict[str, Any]:
         "reason_tech": d.reason,
     }
 
-    if d.band not in ("warn", "hard"):
+    if d.band not in ("warn", "hard") or forecast.get("state") == "caution":
         if forecast.get("state") == "caution":
             base["show"] = True
-            base["chip"] = "AI · Caution"
-            base["title"] = "Swap is already in use"
+            base["chip"] = "AI · Watch"
+            base["title"] = "Keep an eye on capacity"
             base["detail"] = (
-                "Swap is not an emergency by itself, but this is not a good moment "
-                "to start more heavy work."
+                f"About {headroom_i} MB of reclaimable headroom. "
+                "Swap/page churn is quiet, so starts remain allowed."
+                if headroom_i is not None
+                else "Swap/page churn is quiet, so starts remain allowed."
             )
         # Quiet: no interrupt. Optional chip stays empty.
         return base

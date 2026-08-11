@@ -119,6 +119,12 @@ struct LiveSnap: Decodable {
         let action_label: String?
         let free_mb: Int?
         let headroom_mb: Int?
+        let headroom_ok_mb: Int?
+        let headroom_warn_mb: Int?
+        let profile_status: String?
+        let profile_age_s: Double?
+        let profile_confidence: Double?
+        let host_id: String?
         let swap_used_mb: Int?
         let swap_total_mb: Int?
         let thrash_score: Double?
@@ -361,6 +367,7 @@ enum Human {
 
     static func pressureLabel(_ state: String, band: String) -> String {
         switch state {
+        case "calibrating": return "Calibrating"
         case "ok": return "Safe"
         case "caution": return "Watch"
         case "stop_start_gate": return "Gate closed"
@@ -372,6 +379,8 @@ enum Human {
 
     static func pressureTitle(_ state: String, band: String, canStart: Bool) -> String {
         switch state {
+        case "calibrating":
+            return "Calibrating this Mac"
         case "ok":
             return "You can keep working"
         case "caution":
@@ -391,6 +400,8 @@ enum Human {
 
     static func pressureDetail(_ state: String, band: String, canStart: Bool) -> String {
         switch state {
+        case "calibrating":
+            return "Collecting a first local baseline before treating capacity numbers as final."
         case "ok":
             return "RAM headroom is healthy and swap activity is quiet."
         case "caution":
@@ -621,9 +632,12 @@ enum BrowserCopy {
 }
 
 enum MonitorCopy {
-    static let roomFullMb = 1500.0
     static var physicalMemoryMb: Double {
         Double(ProcessInfo.processInfo.physicalMemory) / (1024.0 * 1024.0)
+    }
+
+    static func roomFullMb() -> Double {
+        return min(4096.0, max(1500.0, physicalMemoryMb * 0.125))
     }
 
     static func shufflingLabel(_ score: Double?) -> String {
@@ -642,13 +656,16 @@ enum MonitorCopy {
         return .green
     }
 
-    static func roomRatio(_ mb: Int?) -> Double {
+    static func roomRatio(_ mb: Int?, okMb: Int? = nil) -> Double {
         guard let mb else { return 0 }
-        return min(1.0, max(0.0, Double(mb) / roomFullMb))
+        let full = (okMb ?? 0) > 0 ? Double(okMb ?? 0) : roomFullMb()
+        return min(1.0, max(0.0, Double(mb) / full))
     }
 
-    static func roomTint(_ mb: Int?) -> Color {
-        let r = roomRatio(mb)
+    static func roomTint(_ mb: Int?, okMb: Int? = nil, warnMb: Int? = nil) -> Color {
+        guard let mb else { return .secondary }
+        if let warnMb, warnMb > 0, mb < warnMb { return .red }
+        let r = roomRatio(mb, okMb: okMb)
         if r < 0.40 { return .red }
         if r < 0.75 { return .orange }
         return .green
@@ -1538,6 +1555,10 @@ final class LiveModel: ObservableObject {
     @Published var resourceStateLabel: String = "Unknown"
     @Published var resourceStateDetail: String = ""
     @Published var resourceHeadroomMb: Int?
+    @Published var resourceHeadroomOkMb: Int?
+    @Published var resourceHeadroomWarnMb: Int?
+    @Published var resourceProfileStatus: String = "unknown"
+    @Published var resourceProfileConfidence: Double?
     @Published var resourceSwapUsedMb: Int?
     @Published var resourceSwapTotalMb: Int?
     @Published var resourceThrashScore: Double?
@@ -1597,12 +1618,15 @@ final class LiveModel: ObservableObject {
         if attentionRows.contains(where: { $0.isNeedsYou || $0.isLimited }) {
             return "exclamationmark.circle.fill"
         }
-        if resourceShow && resourcePressureState != "ok" { return "exclamationmark.circle.fill" }
+        if resourceShow && (resourcePressureState == "stop_start_gate" || resourcePressureState == "freeze_risk" || resourcePressureState == "unknown") {
+            return "exclamationmark.circle.fill"
+        }
         return nil
     }
 
     var resourceTint: Color {
         switch resourcePressureState {
+        case "calibrating": return .blue
         case "ok": return .green
         case "caution": return .yellow
         case "stop_start_gate": return .orange
@@ -1613,6 +1637,7 @@ final class LiveModel: ObservableObject {
 
     var resourceIcon: String {
         switch resourcePressureState {
+        case "calibrating": return "gauge.medium"
         case "ok": return "checkmark.shield.fill"
         case "caution": return "gauge.medium"
         case "stop_start_gate": return "hand.raised.fill"
@@ -2064,6 +2089,10 @@ final class LiveModel: ObservableObject {
             resourceCheckpointHint = r.checkpoint_hint ?? ""
             resourceBrowserHint = r.browser_hint ?? ""
             resourceHeadroomMb = r.headroom_mb
+            resourceHeadroomOkMb = r.headroom_ok_mb
+            resourceHeadroomWarnMb = r.headroom_warn_mb
+            resourceProfileStatus = r.profile_status ?? "unknown"
+            resourceProfileConfidence = r.profile_confidence
             resourceSwapUsedMb = r.swap_used_mb
             resourceSwapTotalMb = r.swap_total_mb
             resourceThrashScore = r.thrash_score
@@ -2091,6 +2120,10 @@ final class LiveModel: ObservableObject {
             resourceStateLabel = "Safe"
             resourceStateDetail = ""
             resourceHeadroomMb = nil
+            resourceHeadroomOkMb = nil
+            resourceHeadroomWarnMb = nil
+            resourceProfileStatus = "unknown"
+            resourceProfileConfidence = nil
             resourceSwapUsedMb = nil
             resourceSwapTotalMb = nil
             resourceThrashScore = nil
@@ -3078,7 +3111,7 @@ struct LocalAIMonitorPanel: View {
                         .foregroundStyle(MonitorTheme.mutedText)
                     Text(Human.mbShort(model.resourceHeadroomMb ?? -1))
                         .font(.title2.monospacedDigit().weight(.bold))
-                        .foregroundStyle(MonitorCopy.roomTint(model.resourceHeadroomMb))
+                        .foregroundStyle(MonitorCopy.roomTint(model.resourceHeadroomMb, okMb: model.resourceHeadroomOkMb, warnMb: model.resourceHeadroomWarnMb))
                 }
                 Spacer(minLength: 0)
                 VStack(alignment: .trailing, spacing: 2) {
@@ -3093,7 +3126,7 @@ struct LocalAIMonitorPanel: View {
             }
 
             GeometryReader { geo in
-                let room = MonitorCopy.roomRatio(model.resourceHeadroomMb)
+                let room = MonitorCopy.roomRatio(model.resourceHeadroomMb, okMb: model.resourceHeadroomOkMb)
                 let spill = MonitorCopy.backupRatio(
                     used: model.resourceSwapUsedMb,
                     total: model.resourceSwapTotalMb
@@ -3104,7 +3137,7 @@ struct LocalAIMonitorPanel: View {
                     Capsule()
                         .fill(MonitorTheme.inkBlue.opacity(0.07))
                     Capsule()
-                        .fill(MonitorCopy.roomTint(model.resourceHeadroomMb).opacity(0.88))
+                        .fill(MonitorCopy.roomTint(model.resourceHeadroomMb, okMb: model.resourceHeadroomOkMb, warnMb: model.resourceHeadroomWarnMb).opacity(0.88))
                         .frame(width: max(8, width * CGFloat(room)))
                     Capsule()
                         .fill(MonitorCopy.backupTint(
@@ -3124,7 +3157,7 @@ struct LocalAIMonitorPanel: View {
 
             VStack(spacing: 6) {
                 HStack(spacing: 6) {
-                    capacityMetric(title: "Room", value: Human.mbShort(model.resourceHeadroomMb ?? -1), tint: MonitorCopy.roomTint(model.resourceHeadroomMb))
+                    capacityMetric(title: "Room", value: Human.mbShort(model.resourceHeadroomMb ?? -1), tint: MonitorCopy.roomTint(model.resourceHeadroomMb, okMb: model.resourceHeadroomOkMb, warnMb: model.resourceHeadroomWarnMb))
                     capacityMetric(title: "Spill", value: storageBackupValue, tint: MonitorCopy.backupTint(used: model.resourceSwapUsedMb, total: model.resourceSwapTotalMb))
                 }
                 HStack(spacing: 6) {
@@ -3143,6 +3176,7 @@ struct LocalAIMonitorPanel: View {
 
     private var capacityPlainState: String {
         switch model.resourcePressureState {
+        case "calibrating": return "Learning"
         case "ok": return "Clear"
         case "caution": return "Watch"
         case "stop_start_gate": return "Hold"
@@ -3152,6 +3186,7 @@ struct LocalAIMonitorPanel: View {
     }
 
     private var capacityPlainDetail: String {
+        if model.resourcePressureState == "calibrating" { return "Local baseline" }
         if model.resourcePressureState == "freeze_risk" { return "Save work first" }
         if !model.resourceCanStartHeavy { return "No new heavy work" }
         if model.resourcePressureState == "caution" { return "Do not stack load" }
@@ -3185,8 +3220,8 @@ struct LocalAIMonitorPanel: View {
             headroomBarRow(
                 title: "Room",
                 value: Human.mbShort(model.resourceHeadroomMb ?? -1),
-                ratio: MonitorCopy.roomRatio(model.resourceHeadroomMb),
-                tint: MonitorCopy.roomTint(model.resourceHeadroomMb)
+                ratio: MonitorCopy.roomRatio(model.resourceHeadroomMb, okMb: model.resourceHeadroomOkMb),
+                tint: MonitorCopy.roomTint(model.resourceHeadroomMb, okMb: model.resourceHeadroomOkMb, warnMb: model.resourceHeadroomWarnMb)
             )
             headroomBarRow(
                 title: "Backup",

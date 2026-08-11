@@ -88,6 +88,18 @@ def _sysctl_int(name: str) -> Optional[int]:
         return None
 
 
+def _physical_memory_bytes_fallback() -> Optional[int]:
+    """Best-effort physical RAM when `sysctl hw.memsize` is unavailable."""
+    try:
+        pages = int(os.sysconf("SC_PHYS_PAGES"))
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        if pages > 0 and page_size > 0:
+            return pages * page_size
+    except (AttributeError, OSError, ValueError):
+        pass
+    return None
+
+
 def _sysctl_swapusage() -> tuple[Optional[float], Optional[float], Optional[float]]:
     """Return (used_mb, total_mb, avail_mb) from `sysctl vm.swapusage`."""
     try:
@@ -247,6 +259,10 @@ def sample_physics(
     memsize = _sysctl_int("hw.memsize")
     if memsize is not None:
         src_parts.append("sysctl:hw.memsize")
+    else:
+        memsize = _physical_memory_bytes_fallback()
+        if memsize is not None:
+            src_parts.append("sysconf:physical_memory")
     pressure = _sysctl_int("vm.memory_pressure")
     if pressure is not None:
         src_parts.append("sysctl:vm.memory_pressure")

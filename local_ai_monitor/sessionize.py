@@ -495,6 +495,13 @@ def is_session_root(p: Proc) -> bool:
             ):
                 return True
             return False
+        if (
+            "BUZZ_ACP_SESSION_TITLE=" in p.cmd
+            and p.basename != "buzz-acp"
+            and not ((_parse_xpc(p.cmd) or "").startswith("com.buzz."))
+            and not _BUZZ_DIR_RE.search(p.cmd)
+        ):
+            return False
         return True
     if p.app in ("OpenClaw", "Claude Desktop", "ChatGPT"):
         return True

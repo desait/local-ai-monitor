@@ -22,6 +22,10 @@ COLLECT_LABEL = "com.user.local-ai-monitor.collect"
 MENUBAR_LABEL = "com.user.local-ai-monitor.menubar"
 RESOURCE_LABEL = "com.user.local-ai-monitor.resource"
 CCM_LABEL = "com.user.local-ai-monitor.ccm-observer"
+LEGACY_MENUBAR_LABELS = (
+    "com.user.ai-top.menubar",
+    "com.user.ai-top-native.menubar",
+)
 
 DEFAULT_SOURCE = ""
 LIB_DIR = os.path.expanduser("~/.local/lib/local-ai-monitor")
@@ -519,6 +523,37 @@ def bootout_menubar() -> Tuple[int, str]:
     return 0, "booted out"
 
 
+def bootout_legacy_menubars(*, remove_plists: bool = False) -> List[str]:
+    """Disable known predecessor menu LaunchAgents that can migrate to new Macs."""
+    domain = uid_domain()
+    touched: List[str] = []
+    for label in LEGACY_MENUBAR_LABELS:
+        path = os.path.join(LAUNCH_AGENTS, f"{label}.plist")
+        subprocess.run(
+            ["launchctl", "bootout", domain, path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["launchctl", "bootout", f"{domain}/{label}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["launchctl", "disable", f"{domain}/{label}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if remove_plists and os.path.isfile(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        if os.path.isfile(path) or remove_plists:
+            touched.append(label)
+    return touched
+
+
 def launchctl_print_menubar() -> Optional[str]:
     domain = uid_domain()
     r = subprocess.run(
@@ -824,6 +859,9 @@ def cmd_install(argv: Optional[List[str]] = None) -> int:
         return 1
 
     if not args.no_bootstrap:
+        old = bootout_legacy_menubars()
+        if old:
+            print(f"launchd:  disabled legacy menubar(s): {', '.join(old)}")
         rc, msg = bootstrap_menubar(mb_plist)
         if rc != 0:
             print(f"warn: launchctl bootstrap menubar: {msg}", file=sys.stderr)
@@ -895,6 +933,9 @@ def cmd_uninstall(argv: Optional[List[str]] = None) -> int:
     print(f"launchd:  {COLLECT_LABEL} removed (if loaded)")
     bootout_menubar()
     print(f"launchd:  {MENUBAR_LABEL} removed (if loaded)")
+    old_menubars = bootout_legacy_menubars(remove_plists=True)
+    if old_menubars:
+        print(f"launchd:  legacy menubar(s) removed: {', '.join(old_menubars)}")
     bootout_resource()
     print(f"launchd:  {RESOURCE_LABEL} removed (if loaded)")
     bootout_ccm_observer()

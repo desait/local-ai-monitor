@@ -26,6 +26,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional, Tuple
 
 from local_ai_monitor.config import ensure_state_dir, state_dir
+from local_ai_monitor.resource.host_profile import get_or_update_profile, thresholds_for_memsize
 from local_ai_monitor.resource.physics import PhysicsSample, page_size_bytes, parse_vm_stat, sample_physics
 
 # Fraction of file-backed pages treated as reclaimable under pressure (not instant,
@@ -76,6 +77,11 @@ class HeadroomSample:
     physics: Dict[str, Any]
     prev_age_s: Optional[float]
     error: Optional[str] = None
+    headroom_ok_mb: Optional[float] = None
+    headroom_warn_mb: Optional[float] = None
+    profile_status: Optional[str] = None
+    profile_confidence: Optional[float] = None
+    host_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -301,12 +307,9 @@ def sample_headroom(
     if phys.memsize_bytes:
         mem_mb = round(phys.memsize_bytes / (1024.0 * 1024.0), 1)
 
-    # Scale ok/warn floors lightly by RAM (base 8 GB).
-    scale = 1.0
-    if mem_mb and mem_mb > 0:
-        scale = max(0.5, min(4.0, mem_mb / 8192.0))
-    ok_mb = float(calib["headroom_ok_mb"]) * scale
-    warn_mb = float(calib["headroom_warn_mb"]) * scale
+    thresholds = thresholds_for_memsize(phys.memsize_bytes)
+    ok_mb = thresholds.headroom_ok_mb
+    warn_mb = thresholds.headroom_warn_mb
 
     if free_mb is None:
         return HeadroomSample(
@@ -333,6 +336,11 @@ def sample_headroom(
             physics=phys.to_dict(),
             prev_age_s=None,
             error="no free pages",
+            headroom_ok_mb=ok_mb,
+            headroom_warn_mb=warn_mb,
+            profile_status="unknown",
+            profile_confidence=0.0,
+            host_id=None,
         )
 
     headroom = compute_headroom_mb(
@@ -342,7 +350,6 @@ def sample_headroom(
         file_backed_mb=file_mb,
         file_reclaim=float(calib["file_backed_reclaim"]),
     )
-
     now = time.time()
     prev = _load_prev(state)
     thrash = 0.0
@@ -363,6 +370,17 @@ def sample_headroom(
                 )
         except (TypeError, ValueError):
             thrash = 0.0
+
+    profile = get_or_update_profile(
+        state=state,
+        memsize_bytes=phys.memsize_bytes,
+        page_size=ps,
+        headroom_mb=headroom,
+        thrash_score=thrash,
+        ai_rss_mb=None,
+    )
+    ok_mb = profile.headroom_ok_mb
+    warn_mb = profile.headroom_warn_mb
 
     band = band_for_headroom(
         headroom,
@@ -411,6 +429,10 @@ def sample_headroom(
                 "headroom_mb": headroom,
                 "band": band,
                 "thrash_score": thrash,
+                "headroom_ok_mb": ok_mb,
+                "headroom_warn_mb": warn_mb,
+                "profile_status": profile.status,
+                "profile_confidence": profile.confidence,
             },
             state=state,
         )
@@ -439,6 +461,11 @@ def sample_headroom(
         physics=phys.to_dict(),
         prev_age_s=prev_age,
         error=None,
+        headroom_ok_mb=ok_mb,
+        headroom_warn_mb=warn_mb,
+        profile_status=profile.status,
+        profile_confidence=profile.confidence,
+        host_id=profile.host_id,
     )
 
 

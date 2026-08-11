@@ -30,6 +30,32 @@
 #define HEADROOM_WARN_MB 600.0
 #define FILE_BACKED_RECLAIM 0.75
 
+static double clamp_double(double v, double lo, double hi) {
+    if (v < lo)
+        return lo;
+    if (v > hi)
+        return hi;
+    return v;
+}
+
+static double scaled_headroom_ok_mb(unsigned long long memsize_bytes) {
+    if (memsize_bytes == 0)
+        return HEADROOM_OK_MB;
+    double mem_mb = (double)memsize_bytes / (1024.0 * 1024.0);
+    return clamp_double(mem_mb * 0.125, 1500.0, 4096.0);
+}
+
+static double scaled_headroom_warn_mb(unsigned long long memsize_bytes) {
+    if (memsize_bytes == 0)
+        return HEADROOM_WARN_MB;
+    double mem_mb = (double)memsize_bytes / (1024.0 * 1024.0);
+    double ok_mb = scaled_headroom_ok_mb(memsize_bytes);
+    double warn_mb = clamp_double(mem_mb * 0.040, 600.0, 1400.0);
+    if (warn_mb >= ok_mb)
+        warn_mb = clamp_double(ok_mb * 0.40, 600.0, 1400.0);
+    return warn_mb;
+}
+
 static int sysctl_int(const char *name, int *out) {
     size_t len = sizeof(int);
     if (sysctlbyname(name, out, &len, NULL, 0) != 0)
@@ -51,12 +77,13 @@ static int sysctl_ull(const char *name, unsigned long long *out) {
 }
 
 /* Headroom band — never free-page waterlines alone. */
-static const char *band_for_headroom(double headroom_mb, int physics_ok) {
+static const char *band_for_headroom(double headroom_mb, int physics_ok,
+                                     double ok_mb, double warn_mb) {
     if (!physics_ok || headroom_mb < 0)
         return "unknown";
-    if (headroom_mb < HEADROOM_WARN_MB)
+    if (headroom_mb < warn_mb)
         return "hard";
-    if (headroom_mb < HEADROOM_OK_MB)
+    if (headroom_mb < ok_mb)
         return "warn";
     return "ok";
 }
@@ -171,7 +198,9 @@ int main(int argc, char **argv) {
             headroom_mb = cheap_mb + file_mb * FILE_BACKED_RECLAIM;
         }
 
-        const char *band = band_for_headroom(headroom_mb, physics_ok);
+        double ok_mb = scaled_headroom_ok_mb(memsize);
+        double warn_mb = scaled_headroom_warn_mb(memsize);
+        const char *band = band_for_headroom(headroom_mb, physics_ok, ok_mb, warn_mb);
         char ts[64];
         iso_local(ts, sizeof(ts));
 
@@ -214,8 +243,8 @@ int main(int argc, char **argv) {
                  pressure,
                  load[0],
                  band,
-                 HEADROOM_OK_MB,
-                 HEADROOM_WARN_MB);
+                 ok_mb,
+                 warn_mb);
 
         /* ensure parent dir exists (best-effort) */
         {

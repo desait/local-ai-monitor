@@ -138,6 +138,65 @@ class TestBuzzChannelAndAgent(unittest.TestCase):
         self.assertIn("buzz:sample-app|fizz/claude", ids)
         self.assertEqual(len(sessions), 2)
 
+    def test_acp_child_without_channel_inherits_buzz_parent(self):
+        parent = make_proc(
+            100,
+            1,
+            "/Applications/Buzz.app/Contents/MacOS/buzz-acp "
+            "BUZZ_ACP_SESSION_TITLE=Munger.Claude "
+            "BUZZ_MANAGED_AGENT=xyz.block.buzz.app",
+            pcpu=0.1,
+            rss_kb=1000,
+        )
+        child = make_proc(
+            101,
+            100,
+            "/Users/u/.local/bin/claude --session-id=x "
+            "BUZZ_ACP_SESSION_TITLE=Munger.Claude "
+            "BUZZ_MANAGED_AGENT=xyz.block.buzz.app",
+            pcpu=2.5,
+            rss_kb=2000,
+        )
+        for p in (parent, child):
+            p.direct_app = classify_direct(p)
+            p.app = p.direct_app
+        self.assertTrue(is_session_root(parent))
+        self.assertFalse(is_session_root(child))
+
+        sessions = sessionize_all(
+            [parent, child],
+            sessionizer=Sessionizer(start_unix_fn=lambda p: 0),
+            skip_lsof=True,
+        )
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0].session_id, "buzz:desktop|munger.claude")
+        self.assertEqual(sessions[0].pids, {100, 101})
+        self.assertAlmostEqual(sessions[0].pcpu, 2.6)
+        self.assertEqual(sessions[0].rss_kb, 3000)
+
+    def test_acp_process_with_channel_evidence_stays_root(self):
+        p = make_proc(
+            100,
+            1,
+            "/Users/u/.local/bin/claude --session-id=x "
+            "XPC_SERVICE_NAME=com.buzz.sample-app "
+            "BUZZ_ACP_SESSION_TITLE=Munger.Claude "
+            "BUZZ_MANAGED_AGENT=xyz.block.buzz.app",
+            pcpu=1.0,
+            rss_kb=1000,
+        )
+        p.direct_app = classify_direct(p)
+        p.app = p.direct_app
+        self.assertTrue(is_session_root(p))
+
+        sessions = sessionize_all(
+            [p],
+            sessionizer=Sessionizer(start_unix_fn=lambda pid: 0),
+            skip_lsof=True,
+        )
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0].session_id, "buzz:sample-app|munger.claude")
+
 
 class TestBuzzWinsOverGrok(unittest.TestCase):
     """C-BUZZ-04"""

@@ -7,13 +7,16 @@ import plistlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 _SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 from local_ai_monitor.install_svc import (  # noqa: 
+    LEGACY_MENUBAR_LABELS,
     MENUBAR_LABEL,
+    bootout_legacy_menubars,
     format_menubar_title,
     parse_plist_bytes,
     render_menubar_plist,
@@ -87,6 +90,17 @@ class TestMenubarPlist(unittest.TestCase):
         with open(os.path.join(app, "Contents", "Info.plist"), "rb") as f:
             info = plistlib.load(f)
         self.assertTrue(info.get("LSUIElement"))
+
+    def test_bootout_legacy_menubars_targets_known_predecessors(self):
+        with mock.patch("local_ai_monitor.install_svc.subprocess.run") as run, mock.patch(
+            "local_ai_monitor.install_svc.os.path.isfile", return_value=False
+        ):
+            touched = bootout_legacy_menubars()
+        self.assertEqual(touched, [])
+        calls = [" ".join(str(p) for p in c.args[0]) for c in run.call_args_list]
+        for label in LEGACY_MENUBAR_LABELS:
+            self.assertTrue(any(f"/{label}" in c for c in calls), calls)
+            self.assertTrue(any(f"disable gui/" in c and label in c for c in calls), calls)
 
 
 if __name__ == "__main__":
