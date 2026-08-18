@@ -34,6 +34,18 @@ Requirements: macOS, Python 3.10+, and Xcode Command Line Tools.
 
 ## Everyday commands
 
+From a checkout of this branch, without replacing the installed copy:
+
+```bash
+./scripts/runway
+./scripts/runway json
+./scripts/link-runway.sh   # optional: put `runway` on PATH
+```
+
+`LOCAL_AI_MONITOR_DEV=1` only changes an already-installed launcher. It does not create the `runway` command.
+
+After linking, or after `scripts/install.sh`:
+
 ```bash
 runway
 runway watch

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import time
 from typing import Any, Dict, List, Optional
 
@@ -50,21 +49,10 @@ def live_is_stale(live: Optional[Dict[str, Any]]) -> bool:
 
 
 def _load_live(state: Optional[str] = None) -> Dict[str, Any]:
+    # Read the running collector only. Do not spawn a one-shot `ps` fallback:
+    # unknown beats lying, and that path is noisy on non-macOS hosts.
     live = LiveStore(state).read()
-    if live:
-        return live
-    try:
-        from local_ai_monitor.collect_basic import collect_sessions
-        from local_ai_monitor.store import build_live_payload
-
-        sessions = collect_sessions(include_threads=False)
-        return build_live_payload(
-            sessions,
-            collector_pid=os.getpid(),
-            sample_interval_s=10.0,
-        )
-    except Exception:
-        return {}
+    return live if isinstance(live, dict) else {}
 
 
 def _tools_from_live(live: Dict[str, Any], *, stale: bool) -> List[RunwayTool]:

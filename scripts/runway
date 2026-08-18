@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Run this checkout's Runway without replacing the installed local-ai-monitor.
+# Reads the same live.json the menu bar already writes.
+set -euo pipefail
+
+_src="${BASH_SOURCE[0]}"
+while [[ -L "$_src" ]]; do
+  _dir="$(cd "$(dirname "$_src")" && pwd)"
+  _src="$(readlink "$_src")"
+  [[ "$_src" != /* ]] && _src="$_dir/$_src"
+done
+ROOT="$(cd "$(dirname "$_src")/.." && pwd)"
+unset _src _dir
+if [[ ! -d "$ROOT/local_ai_monitor/runway" ]]; then
+  echo "error: Runway source not found at $ROOT/local_ai_monitor/runway" >&2
+  exit 1
+fi
+
+PYTHON="${LOCAL_AI_MONITOR_PYTHON:-}"
+if [[ -z "$PYTHON" ]]; then
+  for c in /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+    if [[ -x "$c" ]]; then
+      PYTHON="$c"
+      break
+    fi
+  done
+fi
+if [[ -z "${PYTHON}" ]]; then
+  PYTHON="$(command -v python3 || true)"
+fi
+if [[ -z "${PYTHON}" || ! -x "${PYTHON}" ]]; then
+  echo "error: python3 not found" >&2
+  exit 1
+fi
+
+export LOCAL_AI_MONITOR_SRC="$ROOT"
+export PYTHONPATH="${ROOT}${PYTHONPATH:+:$PYTHONPATH}"
+# Leave LOCAL_AI_MONITOR_STATE / CONFIG alone so we read the running install.
+exec "$PYTHON" -m local_ai_monitor runway "$@"

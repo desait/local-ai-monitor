@@ -372,6 +372,51 @@ class TestCopyAndSurface(unittest.TestCase):
         self.assertEqual(rc, 0)
         cr.assert_called_once()
 
+    def test_checkout_runner_help(self):
+        import subprocess
+
+        script = os.path.join(_SRC, "scripts", "runway")
+        self.assertTrue(os.path.isfile(script), script)
+        self.assertTrue(os.access(script, os.X_OK), script)
+        r = subprocess.run(
+            [script, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("room", r.stdout.lower())
+
+    def test_checkout_runner_follows_symlink(self):
+        import subprocess
+
+        script = os.path.join(_SRC, "scripts", "runway")
+        with tempfile.TemporaryDirectory() as td:
+            link = os.path.join(td, "runway")
+            os.symlink(script, link)
+            r = subprocess.run(
+                [link, "--help"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("room", r.stdout.lower())
+
+    def test_module_entry_help(self):
+        import subprocess
+
+        r = subprocess.run(
+            [sys.executable, "-m", "local_ai_monitor.runway", "--help"],
+            cwd=_SRC,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={**os.environ, "PYTHONPATH": _SRC},
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("room", r.stdout.lower())
+
 
 class TestEvaluateOracle(unittest.TestCase):
     def test_idle_service_under_hard_is_pause(self):
