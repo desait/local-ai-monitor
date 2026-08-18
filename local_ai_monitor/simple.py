@@ -1,86 +1,21 @@
-"""Friendly Terminal list for non-technical users — no tmux, minimal keys."""
+"""Friendly Terminal list for non-technical users — no tmux, minimal keys.
+
+Renders the Runway card. Expert tables live in tui / dash.
+"""
 
 from __future__ import annotations
 
-import json
-import os
 import select
 import signal
 import sys
 import time
-from typing import Any, Dict, Optional
 
-from local_ai_monitor.humanize import summarize_live
-from local_ai_monitor.store import LiveStore, parse_local_iso
-
-
-def _is_stale(live: Dict[str, Any]) -> bool:
-    ts = parse_local_iso(str(live.get("ts") or ""))
-    if not ts:
-        return True
-    interval = float(live.get("sample_interval_s") or 10)
-    return (time.time() - ts) > 3 * interval
+from local_ai_monitor.runway.compose import compose_card
+from local_ai_monitor.runway.copy import home_lines, watch_lines
 
 
-def _load_summary() -> Dict[str, Any]:
-    live = LiveStore().read()
-    if not live:
-        # Fall back to one-shot collect path
-        try:
-            from local_ai_monitor.collect_basic import collect_sessions
-            from local_ai_monitor.store import build_live_payload
-
-            sessions = collect_sessions(include_threads=False)
-            live = build_live_payload(
-                sessions,
-                collector_pid=os.getpid(),
-                sample_interval_s=10.0,
-            )
-            return summarize_live(live, stale=False)
-        except Exception:
-            return summarize_live({}, stale=True)
-    return summarize_live(live, stale=_is_stale(live))
-
-
-def render_simple(summary: Dict[str, Any]) -> str:
-    lines = []
-    lines.append("")
-    lines.append("  AI tools on this Mac")
-    lines.append("  ────────────────────")
-    lines.append("")
-    lines.append(f"  {summary.get('sentence', '')}")
-    mem = summary.get("memory_line") or ""
-    if mem:
-        lines.append(f"  Using {mem}.")
-    lines.append("")
-
-    tools = summary.get("tools") or []
-    if not tools and summary.get("worry") != "stale":
-        lines.append("  No AI tools are using noticeable resources right now.")
-    elif summary.get("worry") == "stale":
-        lines.append("  Background monitor is not updating.")
-        lines.append("  Try: local-ai-monitor install")
-    else:
-        lines.append("  By tool")
-        for t in tools:
-            lines.append(
-                f"    · {t['name']:<14}  {t['load']:<10}  {t['mem']}"
-            )
-
-    buzz = summary.get("buzz_projects") or []
-    if buzz:
-        lines.append("")
-        lines.append("  Buzz projects")
-        for g in buzz:
-            lines.append(f"    {g['project']}")
-            for w in g.get("workers") or []:
-                lines.append(f"      └ {w['name']:<20}  {w['load']:<10}  {w['mem']}")
-
-    lines.append("")
-    lines.append("  Press Q to close")
-    lines.append("  The menu bar icon (AI) keeps watching in the background.")
-    lines.append("")
-    return "\n".join(lines)
+def render_simple(card=None) -> str:
+    return watch_lines(card if card is not None else compose_card())
 
 
 def run_simple(*, once: bool = False, interval: float = 2.0) -> int:
@@ -108,7 +43,7 @@ def run_simple(*, once: bool = False, interval: float = 2.0) -> int:
 
     try:
         while not stop:
-            text = render_simple(_load_summary())
+            text = render_simple()
             if once:
                 print(text)
                 return 0
@@ -139,18 +74,6 @@ def run_simple(*, once: bool = False, interval: float = 2.0) -> int:
 
 
 def print_home_message() -> int:
-    """Bare `local-ai-monitor`: guide non-tech users to the menu bar."""
-    summary = _load_summary()
-    print()
-    print("  Local AI Monitor is watching in your menu bar.")
-    print(f"  Look for:  {summary.get('chip', 'AI · …')}")
-    print()
-    print(f"  {summary.get('sentence', '')}")
-    if summary.get("memory_line"):
-        print(f"  Using {summary['memory_line']}.")
-    print()
-    print("  Click that menu bar item for a simple list and actions.")
-    print("  Friendly full list:  local-ai-monitor simple")
-    print("  Expert Terminal:     local-ai-monitor tui   or   local-ai-monitor dash")
-    print()
+    """Bare `local-ai-monitor` / `runway`: guide people to the menu bar."""
+    print(home_lines(compose_card()), end="")
     return 0

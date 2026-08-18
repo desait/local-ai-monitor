@@ -29,6 +29,7 @@ _SELF_MARKERS = (
     "Local AI Monitor Menu",
     "local-ai-monitor-menubar",
     "com.user.local-ai-monitor",
+    "runway",
 )
 
 # "Heavy" absolute floor (MB). On 8 GB Macs, <1 GB is normal — not an emergency.

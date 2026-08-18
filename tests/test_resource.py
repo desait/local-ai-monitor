@@ -352,6 +352,33 @@ class TestPolicy(unittest.TestCase):
             self.assertEqual(d.action, "none")
 
     def test_evaluate_ok_no_action(self):
+        from local_ai_monitor.resource import headroom as hr_mod
+        from local_ai_monitor.resource.headroom import HeadroomSample
+
+        fake = HeadroomSample(
+            ok=True,
+            band="ok",
+            headroom_mb=2400.0,
+            thrash_score=0.0,
+            free_mb=800.0,
+            speculative_mb=20.0,
+            purgeable_mb=100.0,
+            file_backed_mb=2000.0,
+            anonymous_mb=2000.0,
+            wired_mb=800.0,
+            compressor_mb=200.0,
+            cheap_mb=920.0,
+            swapins=0,
+            swapouts=0,
+            pageouts=0,
+            decompressions=0,
+            compressions=0,
+            load_1=1.0,
+            memsize_mb=8192.0,
+            reason="headroom OK",
+            physics={},
+            prev_age_s=60.0,
+        )
         with tempfile.TemporaryDirectory() as td:
             ensure_state_dir(td)
             atomic_write_json(
@@ -367,11 +394,12 @@ class TestPolicy(unittest.TestCase):
                     ],
                 },
             )
-            d = evaluate(
-                state=td,
-                config=DEFAULT_RESOURCE,
-                free_pages_override=50_000,
-            )
+            with mock.patch.object(hr_mod, "sample_headroom", return_value=fake):
+                d = evaluate(
+                    state=td,
+                    config=DEFAULT_RESOURCE,
+                    free_pages_override=50_000,
+                )
             self.assertEqual(d.band, "ok")
             self.assertEqual(d.action, "none")
 
@@ -505,14 +533,16 @@ class TestHuman(unittest.TestCase):
         )
         h = humanize_decision(d)
         self.assertTrue(h["show"])
-        self.assertEqual(h["chip"], "AI · Headroom low")
+        self.assertTrue((h["chip"] or "").endswith("Protect"), h["chip"])
+        self.assertEqual(h.get("plain_state"), "protect")
         self.assertIn("Anthropic CLI", h["candidate_label"] or "")
         self.assertNotIn("pid:", h["detail"] or "")
-        self.assertIn("mid-stream", h["detail"] or "")
+        self.assertIn("mid-stream", (h["detail"] or "").lower())
         self.assertNotIn("almost out of free memory", (h["title"] or "").lower())
         self.assertNotIn("memory is getting tight", (h["title"] or "").lower())
-        self.assertEqual(h["action_label"], "Reclaim idle")
+        self.assertEqual(h["action_label"], "Pause unused")
         self.assertNotEqual(h["action_label"], "Free RAM")
+        self.assertFalse(h.get("can_start_heavy"))
 
 
 class TestCliSafety(unittest.TestCase):

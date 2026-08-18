@@ -7,7 +7,7 @@ import SwiftUI
 enum Brand {
     static var chip: String {
         let env = ProcessInfo.processInfo.environment["LOCAL_AI_MONITOR_BRAND"] ?? "Monitor"
-        return env.isEmpty ? "Monitor" : env
+        return env.isEmpty ? "Runway" : env
     }
 }
 
@@ -140,6 +140,12 @@ struct LiveSnap: Decodable {
         let pressure_state: String?
         let recommendation: String?
         let can_start_heavy: Bool?
+        let plain_state: String?
+        let plain_title: String?
+        let plain_detail: String?
+        let next_step: String?
+        let promise: String?
+        let runway_action: String?
         let checkpoint_hint: String?
         let browser_hint: String?
         let swapins: UInt64?
@@ -356,7 +362,7 @@ enum Human {
     static func resourceSummary(headroomMb: Int?, swapUsedMb: Int?, swapTotalMb: Int?, thrash: Double?, aiMb: Int?) -> String {
         var parts: [String] = []
         if let headroomMb {
-            parts.append("RAM headroom \(mbShort(headroomMb))")
+            parts.append("Room \(mbShort(headroomMb))")
         }
         if let swapUsedMb {
             if let swapTotalMb, swapTotalMb > 0 {
@@ -377,12 +383,12 @@ enum Human {
     static func pressureLabel(_ state: String, band: String) -> String {
         switch state {
         case "calibrating": return "Calibrating"
-        case "ok": return "Safe"
+        case "ok": return "Open"
         case "caution": return "Watch"
-        case "stop_start_gate": return "Gate closed"
-        case "freeze_risk": return "Protect work"
-        case "unknown": return "Unknown"
-        default: return band == "hard" ? "Protect work" : (band == "warn" ? "Gate closed" : "Safe")
+        case "stop_start_gate": return "Hold"
+        case "freeze_risk": return "Protect"
+        case "unknown": return "—"
+        default: return band == "hard" ? "Protect" : (band == "warn" ? "Hold" : "Open")
         }
     }
 
@@ -393,16 +399,16 @@ enum Human {
         case "ok":
             return "You can keep working"
         case "caution":
-            return "Keep an eye on capacity"
+            return "Keep an eye on this Mac"
         case "stop_start_gate":
-            return "Do not start more AI"
+            return "Do not start more heavy work"
         case "freeze_risk":
-            return "Protect current work"
+            return "Protect the work that is open"
         case "unknown":
-            return "Capacity unknown"
+            return "Runway cannot read this Mac yet"
         default:
-            if band == "hard" { return "Protect current work" }
-            if !canStart { return "Do not start more AI" }
+            if band == "hard" { return "Protect the work that is open" }
+            if !canStart { return "Do not start more heavy work" }
             return "You can keep working"
         }
     }
@@ -412,23 +418,23 @@ enum Human {
         case "calibrating":
             return "Collecting a first local baseline before treating capacity numbers as final."
         case "ok":
-            return "RAM headroom is healthy and swap activity is quiet."
+            return "This Mac has room. Starts are safe."
         case "caution":
-            return "Capacity is under watch, but starts are still allowed."
+            return "Starts are still allowed — do not pile on several heavy apps at once."
         case "stop_start_gate":
-            return "RAM headroom is thin or swap is high. Reclaim idle load before adding work."
+            return "Pause unused background work before opening more. Mid-stream work stays open."
         case "freeze_risk":
-            return "Swap/page churn can stall the Mac. Checkpoint, park, and keep active work only."
+            return "This Mac is shuffling memory. Your open work stays safe."
         case "unknown":
-            return "Telemetry is incomplete. Avoid heavy starts until the monitor recovers."
+            return "Avoid starting another heavy app until Runway can read this Mac."
         default:
             if band == "hard" {
-                return "Swap/page churn can stall the Mac. Checkpoint, park, and keep active work only."
+                return "This Mac is shuffling memory. Your open work stays safe."
             }
             if !canStart {
-                return "RAM headroom is thin or swap is high. Reclaim idle load before adding work."
+                return "Pause unused background work before opening more. Mid-stream work stays open."
             }
-            return "RAM headroom is healthy and swap activity is quiet."
+            return "This Mac has room. Starts are safe."
         }
     }
 
@@ -736,26 +742,26 @@ enum MonitorCopy {
     static func actionTitle(state: String, canStart: Bool) -> String {
         switch state {
         case "freeze_risk":
-            return "Save work, then reduce load"
+            return "Leave open work alone"
         case "stop_start_gate":
-            return "Reduce load before adding AI"
+            return "Do not start more heavy work"
         case "caution":
-            return "Capacity is available"
+            return "You can still start more"
         default:
-            return canStart ? "No action needed" : "Reduce load before adding AI"
+            return canStart ? "Nothing to do" : "Do not start more heavy work"
         }
     }
 
     static func actionSubtitle(state: String, canStart: Bool) -> String {
         switch state {
         case "freeze_risk":
-            return "Use App Cleanup or Parking Lot. Keep active sessions open."
+            return "Keep chats open. Pause unused background work only if the Mac feels stuck."
         case "stop_start_gate":
-            return "Review inactive apps or park helpers first."
+            return "Pause unused background work first. Your chats stay open."
         case "caution":
             return "This Mac is under watch, but starts are still allowed."
         default:
-            return canStart ? "Monitor will warn you before starts become risky." : "Review inactive apps or park helpers first."
+            return canStart ? "Runway will warn you before starts become risky." : "Pause unused background work first. Your chats stay open."
         }
     }
 }
@@ -1571,7 +1577,7 @@ final class LiveModel: ObservableObject {
     @Published var resourceTitle: String = ""
     @Published var resourceDetail: String = ""
     @Published var resourceCandidateLabel: String = ""
-    @Published var resourceActionLabel: String = "Reclaim idle"
+    @Published var resourceActionLabel: String = "Pause unused"
     @Published var resourceCandidateApp: String = ""
     @Published var resourceCandidateSessionId: String = ""
     @Published var resourceChip: String = ""
@@ -1997,15 +2003,15 @@ final class LiveModel: ObservableObject {
         let sid = resourceCandidateSessionId
         let label = resourceCandidateLabel.isEmpty ? "heaviest idle AI session" : resourceCandidateLabel
         guard !app.isEmpty, !sid.isEmpty else {
-            focusNote = "No safe idle session to reclaim right now."
+            focusNote = "No unused background work to pause right now."
             return
         }
         let ok = EndConfirm.ask(
-            title: "Reclaim idle load on this Mac?",
-            message: "This stops \(label).\nUnsaved work in that session may be lost.\nBackground services (like OpenClaw) are fully stopped so they do not restart.\nActive mid-stream work is refused by policy."
+            title: "Pause unused background work?",
+            message: "This pauses \(label).\nYour chats and active work stay open.\nBackground helpers that restart themselves are fully stopped.\nRunway will not close mid-stream work."
         )
         if !ok { return }
-        focusNote = "Reclaiming idle…"
+        focusNote = "Pausing unused work…"
         let msg = EndSessionHelper.end(tool: app, sessionId: sid)
         afterEndUI(removedApp: app, removedSession: sid, note: msg)
     }
@@ -2076,6 +2082,8 @@ final class LiveModel: ObservableObject {
         let rss = snap.totals?.rss_kb ?? 0
         let topCpu = snap.top?.cpu_pct ?? 0
         titleText = Human.chip(cpu: cpu, stale: false)
+        // Capacity chip wins over CPU% once Runway has a reading.
+        // Attention (needs you / limited) still overrides later.
         sentence = Human.sentence(
             cpu: cpu,
             rssKb: rss,
@@ -2142,22 +2150,28 @@ final class LiveModel: ObservableObject {
             resourcePressureState = pressure
             resourceCanStartHeavy = canStart
             resourceStateLabel = Human.pressureLabel(pressure, band: resourceBand)
-            resourceTitle = Human.pressureTitle(pressure, band: resourceBand, canStart: canStart)
-            resourceStateDetail = Human.pressureDetail(pressure, band: resourceBand, canStart: canStart)
-            let summary = Human.resourceSummary(
-                headroomMb: r.headroom_mb,
-                swapUsedMb: r.swap_used_mb,
-                swapTotalMb: r.swap_total_mb,
-                thrash: r.thrash_score,
-                aiMb: r.ai_rss_mb
-            )
-            if !summary.isEmpty {
-                resourceDetail = summary + "."
+            if let plainTitle = r.plain_title, !plainTitle.isEmpty {
+                resourceTitle = plainTitle
             } else {
-                resourceDetail = r.detail ?? ""
+                resourceTitle = Human.pressureTitle(pressure, band: resourceBand, canStart: canStart)
+            }
+            resourceStateDetail = Human.pressureDetail(pressure, band: resourceBand, canStart: canStart)
+            if let plain = r.plain_detail, !plain.isEmpty {
+                resourceDetail = plain
+            } else if let detail = r.detail, !detail.isEmpty {
+                resourceDetail = detail
+            } else {
+                let summary = Human.resourceSummary(
+                    headroomMb: r.headroom_mb,
+                    swapUsedMb: r.swap_used_mb,
+                    swapTotalMb: r.swap_total_mb,
+                    thrash: r.thrash_score,
+                    aiMb: r.ai_rss_mb
+                )
+                resourceDetail = summary.isEmpty ? "" : summary + "."
             }
             resourceCandidateLabel = r.candidate_label ?? ""
-            resourceActionLabel = r.action_label ?? "Reclaim idle"
+            resourceActionLabel = r.action_label ?? "Pause unused"
             resourceCandidateApp = r.candidate_app ?? ""
             resourceCandidateSessionId = r.candidate_session_id ?? ""
             resourceChip = "\(Brand.chip) · \(resourceStateLabel)"
@@ -2229,28 +2243,26 @@ final class LiveModel: ObservableObject {
         toolRows = aggregateTools(sessions, meta: snap.tools)
         refreshHeaviest(from: allSessions)
 
-        // Chip: interrupt-class only (needs you > limited > free RAM)
+        // Chip: needs you > limited > Runway capacity > CPU%
         let needN = attentionRows.filter { $0.isNeedsYou && $0.confidence != "low" }.count
         let limitedN = attentionRows.filter { $0.isLimited }.count
         if needN > 0 {
             titleText = needN == 1 ? "\(Brand.chip) · Needs you" : "\(Brand.chip) · \(needN) need you"
         } else if limitedN > 0 {
             titleText = "\(Brand.chip) · Limited"
-        } else if resourceShow,
-                  (resourcePressureState == "stop_start_gate" || resourcePressureState == "freeze_risk"),
-                  !resourceChip.isEmpty {
+        } else if resourceShow, !resourceChip.isEmpty {
             titleText = resourceChip
         }
         titleText += LivePathConfig.labChipSuffix
 
-        // When headroom/freeze-risk is elevated, keep the top card distinct from
-        // the resource card title below. The resource card owns the headroom headline.
         if resourceShow, resourcePressureState == "freeze_risk" {
-            sentence = "Active work is protected. Reclaim idle load below before adding more."
+            sentence = "This Mac is under strain. Your open work stays safe."
         } else if resourceShow, !resourceCanStartHeavy {
-            sentence = "Active work is stable. New AI starts are gated for now."
+            sentence = "Do not open another heavy app yet. Your chats stay open."
         } else if resourceShow, resourcePressureState == "caution" {
-            sentence = "This Mac has room for more work. Capacity is under watch, not blocked."
+            sentence = "You can still start more work. Keep an eye on this Mac."
+        } else if resourceShow {
+            sentence = "You can start more work."
         }
 
         if case .editTools = nav {
@@ -3178,7 +3190,7 @@ struct LocalAIMonitorPanel: View {
                 loadSourcesCard
                 capacityActionCard
                 if model.resourceAutoEnd {
-                    Text("Auto-reclaim is on for idle load only — never kills mid-stream work.")
+                    Text("Auto-pause is on for unused background work only — never closes mid-stream work.")
                         .font(.caption2)
                         .foregroundStyle(MonitorTheme.quietText)
                 }

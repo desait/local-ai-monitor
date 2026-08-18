@@ -17,6 +17,7 @@ python3 -m unittest discover -s tests -q
 2. **Do not** reintroduce free-page-only auto-kill of interactive AI sessions.
 3. Prefer **lean always-on** (`local-ai-monitord`) over Python KeepAlive collect.
 4. User-facing copy: no raw feed filenames, no internal “lab” labels on production paths.
+   Everyday sentences live in `local_ai_monitor/runway/copy.py` — no PIDs, tmux, or free pages.
 5. Tests should use generic paths (`/Users/u/...`), not personal home directories.
 
 ## Pull requests

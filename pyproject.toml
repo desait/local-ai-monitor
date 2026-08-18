@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-ai-monitor"
-version = "2.1.0"
-description = "Local macOS menu bar and CLI monitor for AI tool CPU and memory headroom."
+version = "2.2.0"
+description = "Runway — local macOS menu bar and CLI for AI tool room-to-work."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -26,6 +26,7 @@ classifiers = [
 [project.scripts]
 local-ai-monitor = "local_ai_monitor.cli:main"
 local-ai-rm = "local_ai_monitor.resource.cli:cmd_resource"
+runway = "local_ai_monitor.runway.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["local_ai_monitor*"]
