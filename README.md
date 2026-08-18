@@ -1,8 +1,10 @@
-# Local AI Monitor
+# Runway
 
-Local AI Monitor shows which AI tools are using CPU and memory on your Mac.
+Runway tells you whether this Mac has room for more AI work — without Terminal, tmux, or Activity Monitor.
 
-It runs locally, lives in your menu bar, and helps you spot when your Mac is getting low on working room.
+It lives in the menu bar. It never closes a chat or session you are still using.
+
+The install paths and background jobs stay `local-ai-monitor` so a copy already running on your laptop is not replaced by this tree.
 
 ## Install
 
@@ -12,31 +14,37 @@ Copy and paste this into Terminal:
 curl -fsSL https://raw.githubusercontent.com/desait/local-ai-monitor/main/scripts/bootstrap.sh | bash
 ```
 
-You will see Local AI Monitor in your Mac menu bar.
+You will see **Runway** in your Mac menu bar.
 
 Requirements: macOS, Python 3.10+, and Xcode Command Line Tools.
 
-## What It Does
+## What it answers
 
-- Shows local AI tool activity from the menu bar.
-- Highlights CPU, memory, swap, and available headroom.
-- Recommends cleanup actions when your Mac is under pressure.
-- Asks before closing or reclaiming work.
+1. **Can I start more work?** Open, Watch, Hold, or Protect.
+2. **What is using this Mac?** Tool names you recognize, not PIDs.
+3. **What should I do next?** One step, in English.
+4. **Will you close my work?** No. Active work is never closed for you.
 
-## What It Does Not Do
+## What it does not do
 
 - It does not send your process data to a cloud service.
 - It does not automatically kill active AI sessions.
 - It does not replace Activity Monitor.
+- It does not change a LaunchAgent already running from an earlier install.
 
-## Common Commands
+## Everyday commands
 
 ```bash
+runway
+runway watch
+runway suggest
 ~/.local/bin/local-ai-monitor status
 ~/.local/bin/local-ai-monitor uninstall
 ```
 
-## For Developers
+`local-ai-monitor` still works. `runway` is the same product with the everyday name.
+
+## For developers
 
 ```bash
 git clone https://github.com/desait/local-ai-monitor.git
@@ -49,6 +57,8 @@ bash menubar/scripts/build.sh
 Config lives in `~/.config/local-ai-monitor/`.
 Runtime state lives in `~/.local/state/local-ai-monitor/`.
 
+The product brain is `local_ai_monitor/runway/`. Physics, policy, and collect stay the observe plane; Runway only composes them.
+
 ## License
 
-Local AI Monitor is open source under the [MIT License](LICENSE).
+Runway (Local AI Monitor) is open source under the [MIT License](LICENSE).

@@ -65,6 +65,7 @@ SACRED_SUBSTRINGS = (
     "local-ai-monitor-litebar",
     "local-ai-monitor-menubar",
     "local-ai-monitor-sensor",
+    "runway",
 )
 
 

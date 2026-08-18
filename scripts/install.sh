@@ -102,8 +102,26 @@ exec "\$PYTHON" -m local_ai_monitor resource "\$@"
 EOF
 chmod +x "$BIN/local-ai-rm"
 
+cat > "$BIN/runway" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+LIB="${LIB}"
+SOURCE="${SOURCE}"
+PYTHON="${PYTHON}"
+if [[ "\${LOCAL_AI_MONITOR_DEV:-0}" == "1" ]]; then
+  export LOCAL_AI_MONITOR_SRC="\${SOURCE}"
+  export PYTHONPATH="\${SOURCE}\${PYTHONPATH:+:\$PYTHONPATH}"
+else
+  export LOCAL_AI_MONITOR_SRC="\${SOURCE}"
+  export PYTHONPATH="\${LIB}\${PYTHONPATH:+:\$PYTHONPATH}"
+fi
+exec "\$PYTHON" -m local_ai_monitor runway "\$@"
+EOF
+chmod +x "$BIN/runway"
+
 echo "installed: $BIN/local-ai-monitor"
 echo "           $BIN/local-ai-rm"
+echo "           $BIN/runway"
 echo "  package: $LIB/local_ai_monitor"
 echo "  python:  $PYTHON"
 echo "  next:    $BIN/local-ai-monitor install    # start menu bar + background monitor"

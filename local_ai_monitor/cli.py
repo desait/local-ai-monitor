@@ -26,6 +26,7 @@ _HEADLESS = frozenset(
         "parking-lot",
         "browser-advice",
         "checkpoint",
+        "runway",
     }
 )
 _ALL_MODES = (
@@ -51,6 +52,7 @@ _ALL_MODES = (
     "parking-lot",
     "browser-advice",
     "checkpoint",
+    "runway",
 )
 
 
@@ -135,13 +137,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             from local_ai_monitor.checkpoint import cmd_checkpoint
 
             return cmd_checkpoint(rest)
+        if cmd == "runway":
+            from local_ai_monitor.runway.cli import cmd_runway
+
+            return cmd_runway(rest)
 
     p = argparse.ArgumentParser(
-        description="Local AI Monitor — see AI tools on this Mac (menu bar first)",
+        description="Runway — see whether this Mac has room for more AI work",
         epilog=(
-            "Everyday use: look at the AI item in your Mac menu bar "
+            "Everyday use: look at Runway in your Mac menu bar "
             "(after `local-ai-monitor install`).\n"
             "  local-ai-monitor              short reminder + menu bar tip (no tmux)\n"
+            "  local-ai-monitor runway       same reminder (product name)\n"
             "  local-ai-monitor simple       friendly full list in Terminal (press Q)\n"
             "  local-ai-monitor tools        list installed AI tools; hide/show in view\n"
             "  local-ai-monitor launch Grok  start a new session (Terminal/app)\n"
