@@ -88,6 +88,32 @@ def _sysctl_int(name: str) -> Optional[int]:
         return None
 
 
+def parse_proc_meminfo(text: str) -> Dict[str, int]:
+    """Parse `/proc/meminfo` into a kB map (Linux)."""
+    out: Dict[str, int] = {}
+    for line in (text or "").splitlines():
+        if ":" not in line:
+            continue
+        key, rest = line.split(":", 1)
+        parts = rest.split()
+        if not parts:
+            continue
+        try:
+            out[key.strip()] = int(parts[0])
+        except ValueError:
+            continue
+    return out
+
+
+def _proc_meminfo() -> Optional[Dict[str, int]]:
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as f:
+            raw = parse_proc_meminfo(f.read())
+        return raw or None
+    except OSError:
+        return None
+
+
 def _physical_memory_bytes_fallback() -> Optional[int]:
     """Best-effort physical RAM when `sysctl hw.memsize` is unavailable."""
     try:
@@ -269,6 +295,24 @@ def sample_physics(
     swap_used_mb, swap_total_mb, swap_avail_mb = _sysctl_swapusage()
     if swap_used_mb is not None or swap_total_mb is not None:
         src_parts.append("sysctl:vm.swapusage")
+
+    if free is None and free_pages_override is None:
+        info = _proc_meminfo()
+        if info and info.get("MemAvailable", 0) > 0:
+            # MemAvailable is Linux "can I start more" — do not also add Cached.
+            avail_kb = int(info["MemAvailable"])
+            free = int((avail_kb * 1024) / ps) if ps else None
+            src_parts.append("proc:MemAvailable")
+            if memsize is None and info.get("MemTotal"):
+                memsize = int(info["MemTotal"]) * 1024
+                src_parts.append("proc:MemTotal")
+            if swap_used_mb is None:
+                total_kb = float(info.get("SwapTotal") or 0)
+                free_kb = float(info.get("SwapFree") or 0)
+                swap_total_mb = round(total_kb / 1024.0, 1)
+                swap_avail_mb = round(free_kb / 1024.0, 1)
+                swap_used_mb = round((total_kb - free_kb) / 1024.0, 1)
+                src_parts.append("proc:Swap")
 
     if free is None and free_pages_override is None:
         return PhysicsSample(

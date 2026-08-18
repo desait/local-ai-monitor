@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Any, Dict, List, Optional
 
@@ -49,10 +50,28 @@ def live_is_stale(live: Optional[Dict[str, Any]]) -> bool:
 
 
 def _load_live(state: Optional[str] = None) -> Dict[str, Any]:
-    # Read the running collector only. Do not spawn a one-shot `ps` fallback:
-    # unknown beats lying, and that path is noisy on non-macOS hosts.
     live = LiveStore(state).read()
     return live if isinstance(live, dict) else {}
+
+
+def snapshot_live(state: Optional[str] = None) -> Dict[str, Any]:
+    """One quiet sample into live.json. Used when no collector is running."""
+    try:
+        from local_ai_monitor.collect_basic import collect_sessions
+        from local_ai_monitor.store import LiveStore as _Live
+
+        sessions = collect_sessions(
+            include_threads=False,
+            skip_lsof=True,
+            include_tokens=False,
+        )
+        return _Live(state).write(
+            sessions,
+            collector_pid=os.getpid(),
+            sample_interval_s=10.0,
+        )
+    except Exception:
+        return {}
 
 
 def _tools_from_live(live: Dict[str, Any], *, stale: bool) -> List[RunwayTool]:
@@ -245,7 +264,14 @@ def compose_card(
 ) -> RunwayCard:
     """Load live + evaluate (unless injected) and return one card."""
     payload = live if live is not None else _load_live(state)
-    is_stale = live_is_stale(payload) if stale is None else bool(stale)
+    if stale is None:
+        if live_is_stale(payload):
+            fresh = snapshot_live(state)
+            if fresh:
+                payload = fresh
+        is_stale = live_is_stale(payload)
+    else:
+        is_stale = bool(stale)
     d = decision if decision is not None else evaluate(state=state)
     return card_from_decision(d, live=payload, stale=is_stale)
 

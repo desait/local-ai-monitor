@@ -38,8 +38,9 @@ From a checkout of this branch, without replacing the installed copy:
 
 ```bash
 ./scripts/runway
+./scripts/runway refresh
 ./scripts/runway json
-./scripts/link-runway.sh   # optional: put `runway` on PATH
+./scripts/link-runway.sh   # optional: put `runway` and `local-ai-monitor` on PATH
 ```
 
 `LOCAL_AI_MONITOR_DEV=1` only changes an already-installed launcher. It does not create the `runway` command.

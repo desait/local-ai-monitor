@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from collections import defaultdict
 from typing import Dict, List, Optional, Set
 
@@ -10,15 +11,9 @@ from local_ai_monitor.classify import APPS, AppStats, Proc, classify_direct
 from local_ai_monitor.sessionize import SessionStats, Sessionizer, sessionize_all
 
 
-def _run_ps() -> List[Proc]:
-    # eww appends environment after args — needed for GROK_AGENT / OPENCLAW markers.
-    out = subprocess.check_output(
-        ["ps", "eww", "-axo", "pid=,ppid=,pcpu=,pmem=,rss=,command="],
-        text=True,
-        errors="replace",
-    )
+def _parse_ps_table(text: str) -> List[Proc]:
     procs: List[Proc] = []
-    for line in out.splitlines():
+    for line in (text or "").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -44,6 +39,37 @@ def _run_ps() -> List[Proc]:
             )
         )
     return procs
+
+
+def _run_ps() -> List[Proc]:
+    # macOS: eww appends environment after args (GROK_AGENT / OPENCLAW markers).
+    # Linux procps rejects BSD -x and prints to stderr; use -eo first there.
+    darwin = [
+        "ps",
+        "eww",
+        "-axo",
+        "pid=,ppid=,pcpu=,pmem=,rss=,command=",
+    ]
+    linux = [
+        "ps",
+        "-eo",
+        "pid=,ppid=,pcpu=,pmem=,rss=,args=",
+    ]
+    cmds = [darwin, linux] if sys.platform == "darwin" else [linux, darwin]
+    for cmd in cmds:
+        try:
+            out = subprocess.check_output(
+                cmd,
+                text=True,
+                errors="replace",
+                stderr=subprocess.DEVNULL,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+            continue
+        procs = _parse_ps_table(out)
+        if procs:
+            return procs
+    return []
 
 
 def _thread_counts(pids: Set[int]) -> Dict[int, int]:

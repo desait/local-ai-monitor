@@ -20,7 +20,11 @@ from local_ai_monitor.resource.config import (  # noqa:
     load_resource_config,
     write_default_resource_config,
 )
-from local_ai_monitor.resource.physics import parse_vm_stat, sample_physics  # noqa: 
+from local_ai_monitor.resource.physics import (  # noqa:
+    parse_proc_meminfo,
+    parse_vm_stat,
+    sample_physics,
+) 
 from local_ai_monitor.resource.forecast import (  # noqa: 
     REC_AVOID_NEW_HEAVY,
     REC_PROTECT_ACTIVE,
@@ -52,6 +56,16 @@ Swapouts:                              5761467.
 
 
 class TestPhysics(unittest.TestCase):
+    def test_parse_proc_meminfo(self):
+        m = parse_proc_meminfo(
+            "MemTotal:       16398384 kB\n"
+            "MemAvailable:   15160048 kB\n"
+            "SwapTotal:             0 kB\n"
+            "SwapFree:              0 kB\n"
+        )
+        self.assertEqual(m["MemAvailable"], 15160048)
+        self.assertEqual(m["MemTotal"], 16398384)
+
     def test_parse_vm_stat(self):
         m = parse_vm_stat(_VM_FIXTURE)
         self.assertEqual(m["pages free"], 3663)

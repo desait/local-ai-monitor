@@ -403,6 +403,31 @@ class TestCopyAndSurface(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("room", r.stdout.lower())
 
+    def test_local_ai_monitor_runner_help(self):
+        import subprocess
+
+        script = os.path.join(_SRC, "scripts", "local-ai-monitor")
+        self.assertTrue(os.access(script, os.X_OK), script)
+        r = subprocess.run(
+            [script, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Runway", r.stdout)
+
+    def test_refresh_writes_live_and_opens(self):
+        from local_ai_monitor.runway.compose import compose_card, snapshot_live
+
+        with tempfile.TemporaryDirectory() as td:
+            ensure_state_dir(td)
+            snap = snapshot_live(td)
+            self.assertTrue(snap)
+            card = compose_card(state=td, live=snap, stale=False)
+            self.assertIn(card.state, ("open", "watch", "hold", "protect", "unknown"))
+            self.assertFalse(card.stale)
+
     def test_module_entry_help(self):
         import subprocess
 

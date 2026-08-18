@@ -254,6 +254,47 @@ def write_collect_agent_plist(
     return out
 
 
+def start_local_watcher(*, state: Optional[str] = None) -> Tuple[int, str]:
+    """Start a background collector without launchd. Safe on Linux.
+
+    Does not replace an already-running collector (flock).
+    """
+    write_default_config()
+    st = ensure_state_dir(state)
+    python = resolve_python3()
+    src = None
+    try:
+        src = resolve_source()
+    except FileNotFoundError:
+        src = None
+    env = os.environ.copy()
+    if src:
+        env["PYTHONPATH"] = src + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        env["LOCAL_AI_MONITOR_SRC"] = src
+    log = os.path.join(st, "collect.log")
+    pid_path = os.path.join(st, "collect.pid")
+    try:
+        with open(log, "a", encoding="utf-8") as fh:
+            proc = subprocess.Popen(
+                [python, "-m", "local_ai_monitor", "collect", "--interval", "10", "--no-lsof"],
+                stdout=fh,
+                stderr=fh,
+                env=env,
+                start_new_session=True,
+            )
+        with open(pid_path, "w", encoding="utf-8") as pf:
+            pf.write(f"{proc.pid}\n")
+    except OSError as exc:
+        return 1, f"could not start watcher: {exc}"
+    try:
+        from local_ai_monitor.runway.compose import snapshot_live
+
+        snapshot_live(state)
+    except Exception:
+        pass
+    return 0, f"pid {proc.pid} (log {log})"
+
+
 def uid_domain() -> str:
     return f"gui/{os.getuid()}"
 
@@ -825,9 +866,18 @@ def cmd_install(argv: Optional[List[str]] = None) -> int:
     if not args.no_bootstrap:
         rc, msg = bootstrap_collect(plist_path)
         if rc != 0:
-            print(f"error: launchctl bootstrap collect: {msg}", file=sys.stderr)
-            return 1
-        print(f"launchd:  {COLLECT_LABEL} {msg}")
+            if sys.platform != "darwin":
+                print(f"launchd:  skipped ({msg})")
+                print("watcher:  starting a local collector (this host is not macOS)")
+                wrc, wmsg = start_local_watcher()
+                print(f"watcher:  {wmsg}")
+                if wrc != 0:
+                    return wrc
+            else:
+                print(f"error: launchctl bootstrap collect: {msg}", file=sys.stderr)
+                return 1
+        else:
+            print(f"launchd:  {COLLECT_LABEL} {msg}")
     else:
         print("launchd:  collect skipped (--no-bootstrap)")
 

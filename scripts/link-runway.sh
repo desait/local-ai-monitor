@@ -4,17 +4,17 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${LOCAL_AI_MONITOR_BIN:-$HOME/.local/bin}"
-SRC="$ROOT/scripts/runway"
-
-if [[ ! -x "$SRC" ]]; then
-  echo "error: missing $SRC" >&2
-  exit 1
-fi
-
 mkdir -p "$BIN"
-ln -sfn "$SRC" "$BIN/runway"
-echo "linked: $BIN/runway -> $SRC"
-echo "This does not replace local-ai-monitor or the menu bar."
+for name in runway local-ai-monitor; do
+  src="$ROOT/scripts/$name"
+  if [[ ! -x "$src" ]]; then
+    echo "error: missing $src" >&2
+    exit 1
+  fi
+  ln -sfn "$src" "$BIN/$name"
+  echo "linked: $BIN/$name -> $src"
+done
+echo "This does not replace LaunchAgents or ~/.local/lib."
 
 case ":$PATH:" in
   *":$BIN:"*) ;;

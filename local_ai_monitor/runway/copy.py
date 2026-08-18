@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from local_ai_monitor.runway.model import brand
+from local_ai_monitor.runway.model import brand, is_mac
 
 PROMISE = "Active work is never closed for you."
 
@@ -20,9 +20,13 @@ _FORBIDDEN = (
 )
 
 
+def host_noun() -> str:
+    return "Mac" if is_mac() else "machine"
+
+
 def room_phrase(headroom_mb: Optional[int]) -> str:
     if headroom_mb is None:
-        return "room on this Mac"
+        return f"room on this {host_noun()}"
     if headroom_mb >= 1024:
         gb = headroom_mb / 1024.0
         return f"about {gb:.1f} GB of room"
@@ -34,11 +38,11 @@ def room_phrase(headroom_mb: Optional[int]) -> str:
 def title_for(state: str) -> str:
     return {
         "open": "You can keep working",
-        "watch": "Keep an eye on this Mac",
+        "watch": f"Keep an eye on this {host_noun()}",
         "hold": "Do not start more heavy work",
         "protect": "Protect the work that is open",
-        "unknown": "Runway cannot read this Mac yet",
-    }.get(state, "Runway cannot read this Mac yet")
+        "unknown": "Runway cannot read this machine yet",
+    }.get(state, "Runway cannot read this machine yet")
 
 
 def sentence_for(state: str, *, can_start: bool, stale: bool = False) -> str:
@@ -51,10 +55,10 @@ def sentence_for(state: str, *, can_start: bool, stale: bool = False) -> str:
     if state == "hold":
         return "Do not open another heavy app yet."
     if state == "protect":
-        return "This Mac is under strain. Your open work stays safe."
+        return f"This {host_noun()} is under strain. Your open work stays safe."
     if not can_start:
-        return "Wait until Runway can read this Mac."
-    return "Runway cannot tell if this Mac has room."
+        return f"Wait until Runway can read this {host_noun()}."
+    return f"Runway cannot tell if this {host_noun()} has room."
 
 
 def detail_for(
@@ -66,10 +70,7 @@ def detail_for(
     stale: bool = False,
 ) -> str:
     if stale:
-        return (
-            "Look for Runway in the menu bar. "
-            "If it is missing, open Terminal and run: local-ai-monitor install"
-        )
+        return "Runway does not have a fresh reading yet. Run: runway refresh"
     room = room_phrase(headroom_mb)
     ai = ""
     if ai_mb and ai_mb > 0:
@@ -78,34 +79,35 @@ def detail_for(
         else:
             ai = f" AI tools are using about {ai_mb} MB."
 
+    host = f"This {host_noun()}"
     if state == "open":
-        return f"This Mac has {room}.{ai} Starts are safe."
+        return f"{host} has {room}.{ai} Starts are safe."
     if state == "watch":
         return (
-            f"This Mac still has {room}.{ai} "
+            f"{host} still has {room}.{ai} "
             "Starts are allowed — just do not pile on several heavy apps at once."
         )
     if state == "hold":
         if candidate_name:
             return (
-                f"This Mac has {room}.{ai} "
+                f"{host} has {room}.{ai} "
                 f"Pause unused background work (for example “{candidate_name}”) "
                 "before opening more. Mid-stream work stays open."
             )
         return (
-            f"This Mac has {room}.{ai} "
+            f"{host} has {room}.{ai} "
             "Pause unused background work before opening more. "
             "Mid-stream work stays open."
         )
     if state == "protect":
         if candidate_name:
             return (
-                f"This Mac is shuffling memory to keep up.{ai} "
+                f"{host} is shuffling memory to keep up.{ai} "
                 f"Unused background work such as “{candidate_name}” can be paused. "
                 "Mid-stream work is never auto-killed."
             )
         return (
-            f"This Mac is shuffling memory to keep up.{ai} "
+            f"{host} is shuffling memory to keep up.{ai} "
             "Everything still running looks like your work, "
             "so nothing will be closed for you. Mid-stream work stays open."
         )
@@ -122,7 +124,7 @@ def next_step_for(
     stale: bool = False,
 ) -> str:
     if stale:
-        return "Wait for the menu bar icon to update, or run local-ai-monitor install."
+        return "Run: runway refresh"
     if action == "nothing":
         return "Nothing to do."
     if action == "avoid_start":
@@ -169,9 +171,15 @@ def assert_clean(text: str) -> str:
 def home_lines(card: Any) -> str:
     """Bare `runway` / `local-ai-monitor` — never opens tmux."""
     b = brand()
+    if is_mac():
+        where = f"  {b} is watching in your menu bar."
+        hint = "  Click that menu bar item for the simple list and actions."
+    else:
+        where = f"  {b} is watching this machine."
+        hint = "  This host has no menu bar — use runway watch for the full list."
     lines = [
         "",
-        f"  {b} is watching in your menu bar.",
+        where,
         f"  Look for:  {card.chip}",
         "",
         f"  {card.sentence}",
@@ -180,7 +188,7 @@ def home_lines(card: Any) -> str:
         f"  Next: {card.next_step}",
         f"  {card.promise}",
         "",
-        "  Click that menu bar item for the simple list and actions.",
+        hint,
         "  Friendly full list:  runway watch",
         "  Expert Terminal:     local-ai-monitor tui",
         "",
@@ -210,7 +218,7 @@ def watch_lines(card: Any) -> str:
             lines.append("    * unused background — safe to pause if this Mac is strained")
     elif card.stale:
         lines.append("  Background watcher is not updating.")
-        lines.append("  Try: local-ai-monitor install")
+        lines.append("  Try: runway refresh")
     else:
         lines.append("  No AI tools are using noticeable resources right now.")
     lines.append("")
@@ -218,6 +226,9 @@ def watch_lines(card: Any) -> str:
     lines.append(f"  {card.promise}")
     lines.append("")
     lines.append("  Press Q to close")
-    lines.append("  The menu bar icon keeps watching in the background.")
+    if is_mac():
+        lines.append("  The menu bar icon keeps watching in the background.")
+    else:
+        lines.append("  runway refresh takes a new reading.")
     lines.append("")
     return "\n".join(lines)

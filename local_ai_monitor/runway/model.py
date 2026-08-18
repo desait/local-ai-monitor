@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -37,6 +38,10 @@ CHIP_WORD = {
 }
 
 DEFAULT_BRAND = "Runway"
+
+
+def is_mac() -> bool:
+    return sys.platform == "darwin"
 
 
 def brand() -> str:

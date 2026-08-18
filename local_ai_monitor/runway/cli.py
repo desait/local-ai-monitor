@@ -39,19 +39,31 @@ def cmd_runway(argv: Optional[List[str]] = None) -> int:
             f"  {brand().lower()} watch        friendly live list (press Q)\n"
             f"  {brand().lower()} suggest      one next step\n"
             f"  {brand().lower()} pause --yes  pause unused background work only\n"
+            f"  {brand().lower()} refresh      take a fresh reading now\n"
         ),
     )
     p.add_argument(
         "command",
         nargs="?",
         default="status",
-        choices=["status", "watch", "suggest", "pause", "json"],
+        choices=["status", "watch", "suggest", "pause", "json", "refresh"],
     )
     p.add_argument("--json", action="store_true")
     p.add_argument("--yes", action="store_true", help="Required for pause")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--interval", "-i", type=float, default=2.0)
     args = p.parse_args(argv)
+
+    if args.command == "refresh":
+        from local_ai_monitor.runway.compose import snapshot_live
+
+        snap = snapshot_live()
+        card = compose_card(live=snap, stale=not bool(snap))
+        if args.json:
+            print(json.dumps(card.to_dict(), indent=2))
+        else:
+            print(home_lines(card), end="")
+        return 0 if snap else 1
 
     if args.command == "watch":
         from local_ai_monitor.simple import run_simple
